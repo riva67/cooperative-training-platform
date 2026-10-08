@@ -1,0 +1,257 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Enums ─────────────
+enum Role {
+  STUDENT
+  ACADEMIC_SUPERVISOR
+  ORG_SUPERVISOR
+  ADMIN
+}
+
+enum OpportunityStatus {
+  OPEN
+  CLOSED
+}
+
+enum ApplicationStatus {
+  PENDING
+  NOMINATED
+  APPROVED
+  REJECTED
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+enum ReportType {
+  WEEKLY
+  FINAL
+  APPROVAL
+}
+
+enum ReportStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+// ───────────── Users & profiles ─────────────
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  student            Student?
+  academicSupervisor AcademicSupervisor?
+  orgSupervisor      OrgSupervisor?
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  reportsSubmitted   Report[]
+  notes              SupervisorNote[]
+  evaluations        Evaluation[]
+  finalGrades        FinalGrade[]
+}
+
+model Student {
+  id           Int     @id @default(autoincrement())
+  userId       Int     @unique
+  universityId String  @unique
+  major        String?
+  gpa          Float?
+
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications Application[]
+  assignments  TrainingAssignment[]
+}
+
+model AcademicSupervisor {
+  id         Int     @id @default(autoincrement())
+  userId     Int     @unique
+  department String?
+
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignments TrainingAssignment[]
+}
+
+model Organization {
+  id           Int     @id @default(autoincrement())
+  name         String
+  sector       String?
+  city         String?
+  contactEmail String?
+
+  supervisors   OrgSupervisor[]
+  opportunities TrainingOpportunity[]
+}
+
+model OrgSupervisor {
+  id             Int     @id @default(autoincrement())
+  userId         Int     @unique
+  organizationId Int
+  position       String?
+
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  assignments  TrainingAssignment[]
+}
+
+// ───────────── Training flow ─────────────
+model TrainingOpportunity {
+  id             Int               @id @default(autoincrement())
+  organizationId Int
+  title          String
+  description    String
+  seats          Int               @default(1)
+  startDate      DateTime
+  endDate        DateTime
+  status         OpportunityStatus @default(OPEN)
+  createdAt      DateTime          @default(now())
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  applications Application[]
+  assignments  TrainingAssignment[]
+}
+
+model Application {
+  id            Int               @id @default(autoincrement())
+  studentId     Int
+  opportunityId Int
+  status        ApplicationStatus @default(PENDING)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  student     Student             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  opportunity TrainingOpportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, opportunityId])
+}
+
+model TrainingAssignment {
+  id                   Int              @id @default(autoincrement())
+  studentId            Int
+  opportunityId        Int
+  academicSupervisorId Int
+  orgSupervisorId      Int
+  startDate            DateTime
+  endDate              DateTime
+  status               AssignmentStatus @default(ACTIVE)
+
+  student            Student             @relation(fields: [studentId], references: [id])
+  opportunity        TrainingOpportunity @relation(fields: [opportunityId], references: [id])
+  academicSupervisor AcademicSupervisor  @relation(fields: [academicSupervisorId], references: [id])
+  orgSupervisor      OrgSupervisor       @relation(fields: [orgSupervisorId], references: [id])
+
+  attendance Attendance[]
+  reports    Report[]
+  notes      SupervisorNote[]
+  evaluation Evaluation[]
+  finalGrade FinalGrade?
+}
+
+model Attendance {
+  id           Int              @id @default(autoincrement())
+  assignmentId Int
+  date         DateTime         @db.Date
+  checkIn      DateTime?
+  checkOut     DateTime?
+  status       AttendanceStatus @default(PRESENT)
+
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assignmentId, date])
+}
+
+model Report {
+  id            Int          @id @default(autoincrement())
+  assignmentId  Int
+  type          ReportType
+  title         String
+  content       String
+  submittedById Int
+  status        ReportStatus @default(SUBMITTED)
+  createdAt     DateTime     @default(now())
+
+  assignment  TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  submittedBy User               @relation(fields: [submittedById], references: [id])
+}
+
+model SupervisorNote {
+  id           Int      @id @default(autoincrement())
+  assignmentId Int
+  supervisorId Int
+  note         String
+  createdAt    DateTime @default(now())
+
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  supervisor User               @relation(fields: [supervisorId], references: [id])
+}
+
+model Evaluation {
+  id           Int      @id @default(autoincrement())
+  assignmentId Int
+  evaluatorId  Int
+  scores       Json // e.g. { "discipline": 8, "skills": 9, "teamwork": 7 }
+  totalScore   Float
+  comments     String?
+  createdAt    DateTime @default(now())
+
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  evaluator  User               @relation(fields: [evaluatorId], references: [id])
+}
+
+model FinalGrade {
+  id            Int      @id @default(autoincrement())
+  assignmentId  Int      @unique
+  grade         Float
+  finalizedById Int
+  finalizedAt   DateTime @default(now())
+
+  assignment  TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  finalizedBy User               @relation(fields: [finalizedById], references: [id])
+}
+
+// ───────────── System ─────────────
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  action    String
+  entity    String
+  entityId  Int?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
