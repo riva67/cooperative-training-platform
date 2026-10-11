@@ -6,9 +6,24 @@ function notFound(req, res, next) {
 
 // eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, next) {
+  // Malformed JSON body
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Invalid JSON in request body' });
+  }
+
+  // File upload errors (multer)
+  if (err.name === 'MulterError') {
+    return res.status(err.code === 'LIMIT_FILE_SIZE' ? 413 : 400).json({
+      error: err.code === 'LIMIT_FILE_SIZE' ? 'File is too large (max 10 MB)' : err.message,
+    });
+  }
+
   // Prisma known errors -> friendly responses
   if (err.code === 'P2002') {
     return res.status(409).json({ error: 'Duplicate value', fields: err.meta?.target });
+  }
+  if (err.code === 'P2003') {
+    return res.status(400).json({ error: 'A related record does not exist' });
   }
   if (err.code === 'P2025') {
     return res.status(404).json({ error: 'Record not found' });

@@ -16,6 +16,7 @@ const createUserSchema = z
     name: z.string().min(2),
     email: z.string().email(),
     password: z.string().min(8),
+    phone: z.string().min(5).max(20).regex(/^[0-9+\-\s]+$/, 'Invalid phone number').optional(),
     role: z.enum(ROLES),
     // role-specific profile fields
     universityId: z.string().optional(), // STUDENT (required)
@@ -41,10 +42,16 @@ const listQuerySchema = z.object({
 const roleSchema = z.object({ role: z.enum(ROLES) });
 const activeSchema = z.object({ isActive: z.boolean() });
 
-const publicFields = { id: true, name: true, email: true, role: true, isActive: true, createdAt: true };
+const publicFields = { id: true, name: true, email: true, phone: true, role: true, isActive: true, createdAt: true };
 
 // All routes below are admin-only
 router.use(authenticate, requireRole('ADMIN'));
+
+// Reject non-numeric ids early (instead of letting Prisma throw a 500)
+router.param('id', (req, res, next, value) => {
+  if (!/^\d+$/.test(value)) return next(new HttpError(400, 'Invalid id'));
+  next();
+});
 
 // POST /users  -> create account (+ role profile)
 router.post(
@@ -64,7 +71,7 @@ router.post(
         : {};
 
     const user = await prisma.user.create({
-      data: { name: d.name, email: d.email.toLowerCase(), passwordHash, role: d.role, ...profile },
+      data: { name: d.name, email: d.email.toLowerCase(), phone: d.phone, passwordHash, role: d.role, ...profile },
       select: publicFields,
     });
 
@@ -147,5 +154,4 @@ router.patch(
   })
 );
 
-// GET /users/audit/logs is handled in the logs module (see README, "Next steps")
 module.exports = router;

@@ -61,6 +61,7 @@ model User {
   passwordHash String
   role         Role
   isActive     Boolean  @default(true)
+  phone        String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -73,6 +74,9 @@ model User {
   notes              SupervisorNote[]
   evaluations        Evaluation[]
   finalGrades        FinalGrade[]
+  sentMessages       Message[]    @relation("SentMessages")
+  receivedMessages   Message[]    @relation("ReceivedMessages")
+  attachments        Attachment[]
 }
 
 model Student {
@@ -94,6 +98,7 @@ model AcademicSupervisor {
 
   user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   assignments TrainingAssignment[]
+  visits      FieldVisit[]
 }
 
 model Organization {
@@ -102,6 +107,7 @@ model Organization {
   sector       String?
   city         String?
   contactEmail String?
+  phone        String?
 
   supervisors   OrgSupervisor[]
   opportunities TrainingOpportunity[]
@@ -116,6 +122,7 @@ model OrgSupervisor {
   user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization         @relation(fields: [organizationId], references: [id])
   assignments  TrainingAssignment[]
+  visits       FieldVisit[]
 }
 
 // ───────────── Training flow ─────────────
@@ -158,6 +165,8 @@ model TrainingAssignment {
   startDate            DateTime
   endDate              DateTime
   status               AssignmentStatus @default(ACTIVE)
+  semester             String?
+  academicYear         String?
 
   student            Student             @relation(fields: [studentId], references: [id])
   opportunity        TrainingOpportunity @relation(fields: [opportunityId], references: [id])
@@ -167,7 +176,7 @@ model TrainingAssignment {
   attendance Attendance[]
   reports    Report[]
   notes      SupervisorNote[]
-  evaluation Evaluation[]
+  evaluation Evaluation?
   finalGrade FinalGrade?
 }
 
@@ -211,10 +220,13 @@ model SupervisorNote {
 
 model Evaluation {
   id           Int      @id @default(autoincrement())
-  assignmentId Int
+  assignmentId Int      @unique // one evaluation form per trainee
   evaluatorId  Int
-  scores       Json // e.g. { "discipline": 8, "skills": 9, "teamwork": 7 }
-  totalScore   Float
+  // { "<criterion key>": { "score": 0-5, "notes": "..." } }  (criteria: src/modules/evaluations/criteria.js)
+  scores       Json
+  totalScore   Float // out of 40
+  wouldHire    Boolean // "Do you want to hire the trainee after graduation?"
+  noHireReason String?
   comments     String?
   createdAt    DateTime @default(now())
 
@@ -254,4 +266,66 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+// ───────────── Field visits ─────────────
+enum VisitStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  CANCELLED
+}
+
+model FieldVisit {
+  id                   Int         @id @default(autoincrement())
+  academicSupervisorId Int
+  orgSupervisorId      Int
+  scheduledAt          DateTime
+  status               VisitStatus @default(PENDING)
+  requestMessage       String
+  responseMessage      String?
+  respondedAt          DateTime?
+  isDone               Boolean     @default(false)
+  doneAt               DateTime?
+  notes                String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  academicSupervisor AcademicSupervisor @relation(fields: [academicSupervisorId], references: [id])
+  orgSupervisor      OrgSupervisor      @relation(fields: [orgSupervisorId], references: [id])
+
+  @@index([academicSupervisorId, scheduledAt])
+  @@index([orgSupervisorId, scheduledAt])
+}
+
+// ───────────── Messaging ─────────────
+model Attachment {
+  id           Int      @id @default(autoincrement())
+  originalName String
+  storedName   String   @unique
+  mimeType     String
+  size         Int
+  uploadedById Int
+  createdAt    DateTime @default(now())
+
+  uploadedBy User      @relation(fields: [uploadedById], references: [id])
+  messages   Message[]
+}
+
+model Message {
+  id           Int       @id @default(autoincrement())
+  senderId     Int
+  recipientId  Int
+  subject      String?
+  body         String
+  attachmentId Int?
+  readAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  sender     User        @relation("SentMessages", fields: [senderId], references: [id])
+  recipient  User        @relation("ReceivedMessages", fields: [recipientId], references: [id])
+  attachment Attachment? @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+
+  @@index([senderId, recipientId, createdAt])
+  @@index([recipientId, readAt])
 }

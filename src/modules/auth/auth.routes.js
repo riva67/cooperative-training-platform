@@ -9,6 +9,7 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { validate } = require('../../middleware/validate');
 const { authenticate } = require('../../middleware/auth');
 const { logAction } = require('../../utils/audit');
+const { loginLimiter } = require('../../middleware/rateLimit');
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -23,6 +24,7 @@ const changePasswordSchema = z.object({
 // POST /auth/login
 router.post(
   '/login',
+  loginLimiter,
   validate(loginSchema),
   asyncHandler(async (req, res) => {
     const { email, password } = req.body;
@@ -49,7 +51,7 @@ router.get(
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: {
-        id: true, name: true, email: true, role: true, createdAt: true,
+        id: true, name: true, email: true, phone: true, role: true, createdAt: true,
         student: true,
         academicSupervisor: true,
         orgSupervisor: { include: { organization: true } },
@@ -75,6 +77,29 @@ router.patch(
     });
     await logAction(user.id, 'PASSWORD_CHANGED', 'User', user.id);
     res.json({ message: 'Password updated' });
+  })
+);
+
+const profileSchema = z
+  .object({
+    name: z.string().min(2).optional(),
+    phone: z.string().min(5).max(20).regex(/^[0-9+\-\s]+$/, 'Invalid phone number').optional(),
+  })
+  .refine((d) => d.name !== undefined || d.phone !== undefined, { message: 'Send name and/or phone' });
+
+// PATCH /auth/profile  -> update my own name / phone (the phone shows in the field-visits table)
+router.patch(
+  '/profile',
+  authenticate,
+  validate(profileSchema),
+  asyncHandler(async (req, res) => {
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data: req.body,
+      select: { id: true, name: true, email: true, phone: true, role: true },
+    });
+    await logAction(req.user.id, 'PROFILE_UPDATED', 'User', req.user.id);
+    res.json(user);
   })
 );
 
