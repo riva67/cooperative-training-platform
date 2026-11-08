@@ -10,7 +10,8 @@
     "db:generate": "prisma generate",
     "db:seed": "node prisma/seed.js",
     "db:studio": "prisma studio",
-    "test:smoke": "node scripts/smoke-test.js"
+    "test:smoke": "node scripts/smoke-test.js",
+    "test:flow": "node scripts/flow-test.js"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

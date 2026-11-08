@@ -44,10 +44,25 @@ It tests login, roles/permissions, assignments and logs, and cleans up after its
 | Evaluation form (نموذج تقييم المتدرب) | `GET /evaluations/criteria`, `POST /evaluations`, `GET /evaluations`, `GET /evaluations/:assignmentId` | Lead |
 | Field visits (الزيارات الميدانية) | `POST /visits`, `GET /visits`, `PATCH /visits/:id`, `/respond`, `/cancel` | Lead |
 | Messaging (chat + email-style + files) | `/messages/*`, `/attachments/*` | Lead |
-| Opportunities, applications, attendance, student reports | see `/docs` | Member B |
-| Supervisor dashboard, notes, final grades, notifications, statistics | see `/docs` | Member C |
+| Opportunities (`/opportunities`) | create, list, get, update/close | ✅ done |
+| Applications (`/applications`) | apply, list, nominate/approve/reject; `/opportunities/:id/applicants` (sorted by GPA); `/assignments/:id/letter` (training letter) | ✅ done |
+| Attendance | `/attendance/check-in`, `/attendance/check-out`, `PATCH /attendance/:id`, `/assignments/:id/attendance` | ✅ done |
+| Reports | `/reports` (submit, list, get), `PATCH /reports/:id/status` | ✅ done |
+| Supervision | `/supervisor/students`, `/notes`, `/assignments/:id/notes`, `/final-grades` | ✅ done |
+| Notifications | `GET /notifications`, `PATCH /notifications/:id/read`, `PATCH /notifications/read-all` | ✅ done |
+| Statistics | `GET /stats/summary` (completion rate, would-hire rate, attendance, grades, evaluation average) | ✅ done |
 
-**Note for Member C:** evaluations are now implemented by the lead (the form has 8 fixed criteria, see `src/modules/evaluations`). Please do not build them. `GET /stats/summary` should include `wouldHireRate` = % of evaluations with `wouldHire = true` (the employment indicator).
+### Application flow
+`PENDING` -> `NOMINATED` (academic supervisor) -> `APPROVED` / `REJECTED` (organization supervisor of that opportunity). Admin can do any step.
+After `APPROVED`, an admin creates the assignment with `POST /assignments`. The final grade (`POST /final-grades`) marks the assignment `COMPLETED`.
+
+### Impact indicators (project success measures)
+| Indicator | Where |
+|---|---|
+| Number of training opportunities | `stats/summary` -> `totalOpportunities`, `openOpportunities` |
+| Training completion rate | `completionRate` |
+| Training provider satisfaction | `averageEvaluationScore` (out of 40) |
+| Post-training employment | `wouldHireRate` |
 
 ## Feature notes
 
@@ -56,7 +71,7 @@ It tests login, roles/permissions, assignments and logs, and cleans up after its
 - **Messaging:** only academic supervisor <-> their students / their organizations. Uploaded files are stored in `uploads/` (ignored by Git, max 10 MB). `POST /messages/broadcast` sends one message (e.g. a form) to all students and/or organizations.
 - **After pulling this update:** run `npm install` and `npx prisma migrate dev` (applies the new migration), then `npm run db:seed` to add phone numbers to the test accounts.
 
-## Rules for module authors (Members B and C)
+## Rules for module authors
 
 1. **Start from `src/modules/_template/example.routes.js`.** Copy it into your own folder and rename.
 2. **Routers are mounted at the root in `src/app.js`**, so write full paths (`'/attendance/check-in'`, `'/assignments/:id/attendance'`) and add `authenticate` to **each route** (not `router.use(authenticate)`). In `app.js`, uncomment only your own line.

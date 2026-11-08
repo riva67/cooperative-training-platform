@@ -14,7 +14,6 @@ info:
 
     **Status labels** in each endpoint description:
     - ✅ **Implemented**: already working in the backend.
-    - 🚧 **Planned**: contract is fixed, implementation in progress. Frontend can build against it now.
 
     **Errors** always look like `{ "error": "message" }`. Validation errors (400) also include `details`.
 
@@ -327,7 +326,7 @@ paths:
     get:
       tags: [Opportunities]
       summary: List training opportunities
-      description: "🚧 **Planned (Member B)**. Any logged-in user."
+      description: "✅ **Implemented**. Any logged-in user."
       parameters:
         - name: status
           in: query
@@ -360,7 +359,7 @@ paths:
       tags: [Opportunities]
       summary: Create an opportunity
       description: |
-        🚧 **Planned (Member B)**. **ORG_SUPERVISOR or ADMIN.**
+        ✅ **Implemented**. **ORG_SUPERVISOR or ADMIN.**
         For an ORG_SUPERVISOR the organization is taken from their profile. ADMIN must send `organizationId`.
       requestBody:
         required: true
@@ -381,7 +380,7 @@ paths:
     get:
       tags: [Opportunities]
       summary: Get one opportunity
-      description: "🚧 **Planned (Member B)**. Any logged-in user."
+      description: "✅ **Implemented**. Any logged-in user."
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
@@ -395,7 +394,7 @@ paths:
     patch:
       tags: [Opportunities]
       summary: Update or close an opportunity
-      description: "🚧 **Planned (Member B)**. **ORG_SUPERVISOR (own organization) or ADMIN.** Send only the fields to change."
+      description: "✅ **Implemented**. **ORG_SUPERVISOR (own organization) or ADMIN.** Send only the fields to change."
       parameters:
         - $ref: '#/components/parameters/Id'
       requestBody:
@@ -427,7 +426,7 @@ paths:
       tags: [Applications]
       summary: Apply to an opportunity
       description: |
-        🚧 **Planned (Member B)**. **STUDENT only.**
+        ✅ **Implemented**. **STUDENT only.**
         Returns 409 if the student already applied, and 400 if the opportunity is closed.
       requestBody:
         required: true
@@ -456,7 +455,7 @@ paths:
       tags: [Applications]
       summary: List applications
       description: |
-        🚧 **Planned (Member B)**. Results depend on the role:
+        ✅ **Implemented**. Results depend on the role:
         STUDENT sees their own; ORG_SUPERVISOR sees applications to their organization; ACADEMIC_SUPERVISOR and ADMIN see all.
       parameters:
         - name: status
@@ -488,7 +487,7 @@ paths:
       tags: [Applications]
       summary: Nominate, approve or reject an application
       description: |
-        🚧 **Planned (Member B)**. Flow: `PENDING → NOMINATED` (ACADEMIC_SUPERVISOR) `→ APPROVED / REJECTED` (ORG_SUPERVISOR). ADMIN can do any step.
+        ✅ **Implemented**. Flow: `PENDING → NOMINATED` (ACADEMIC_SUPERVISOR) `→ APPROVED / REJECTED` (ORG_SUPERVISOR). ADMIN can do any step.
         The student receives a notification on every change.
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -623,11 +622,68 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /opportunities/{id}/applicants:
+    get:
+      tags: [Applications]
+      summary: Applicants of one opportunity, sorted by GPA
+      description: "✅ **Implemented**. **ACADEMIC_SUPERVISOR, ORG_SUPERVISOR (own organization) or ADMIN.** Highest GPA first; students without a GPA come last."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ApplicationStatus' }
+      responses:
+        '200':
+          description: Applications with student (and user name/email)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  opportunityId: { type: integer }
+                  count: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Application' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assignments/{id}/letter:
+    get:
+      tags: [Assignments]
+      summary: Data for the official training letter (خطاب التدريب)
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN. Returns the letter text and fields for the frontend to render or print."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Letter data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title: { type: string }
+                  issuedDate: { type: string, format: date }
+                  university: { type: string }
+                  companyName: { type: string }
+                  studentName: { type: string }
+                  universityId: { type: string }
+                  major: { type: string, nullable: true }
+                  trainingTitle: { type: string }
+                  startDate: { type: string, format: date }
+                  endDate: { type: string, format: date }
+                  content: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /attendance/check-in:
     post:
       tags: [Attendance]
       summary: Check in for today
-      description: "🚧 **Planned (Member B)**. **STUDENT only**, on their own ACTIVE assignment. One record per day (409 if already checked in)."
+      description: "✅ **Implemented**. **STUDENT only**, on their own ACTIVE assignment. One record per day (409 if already checked in)."
       requestBody:
         required: true
         content:
@@ -656,7 +712,7 @@ paths:
     post:
       tags: [Attendance]
       summary: Check out for today
-      description: "🚧 **Planned (Member B)**. **STUDENT only.** Requires an existing check-in for today."
+      description: "✅ **Implemented**. **STUDENT only.** Requires an existing check-in for today."
       requestBody:
         required: true
         content:
@@ -668,10 +724,15 @@ paths:
                 assignmentId: { type: integer }
       responses:
         '200':
-          description: Attendance record updated with checkOut time
+          description: "Attendance record updated with checkOut time. If the student leaves before 5 working hours (MIN_WORK_HOURS) the response also has a `warning` message; the check-out is still recorded."
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Attendance' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Attendance'
+                  - type: object
+                    properties:
+                      warning: { type: string, example: "تنبيه: تم تسجيل الانصراف قبل إتمام 5 ساعات عمل" }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -681,7 +742,7 @@ paths:
     patch:
       tags: [Attendance]
       summary: Correct an attendance status
-      description: "🚧 **Planned (Member B)**. **ORG_SUPERVISOR (their trainee) or ADMIN**, e.g. mark LATE or EXCUSED."
+      description: "✅ **Implemented**. **ORG_SUPERVISOR (their trainee) or ADMIN**, e.g. mark LATE or EXCUSED."
       parameters:
         - $ref: '#/components/parameters/Id'
       requestBody:
@@ -708,7 +769,7 @@ paths:
     get:
       tags: [Attendance]
       summary: Attendance records of an assignment
-      description: "🚧 **Planned (Member B)**. The student, their supervisors, or ADMIN. Newest first."
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN. Newest first."
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
@@ -737,7 +798,7 @@ paths:
     post:
       tags: [Reports]
       summary: Submit a report
-      description: "🚧 **Planned (Member B)**. STUDENT submits `WEEKLY`/`FINAL` reports; ORG_SUPERVISOR can submit an `APPROVAL` report. Status starts as SUBMITTED."
+      description: "✅ **Implemented**. STUDENT submits `WEEKLY`/`FINAL` reports; ORG_SUPERVISOR can submit an `APPROVAL` report. Status starts as SUBMITTED."
       requestBody:
         required: true
         content:
@@ -762,7 +823,7 @@ paths:
     get:
       tags: [Reports]
       summary: List reports
-      description: "🚧 **Planned (Member B)**. Scoped by role like assignments."
+      description: "✅ **Implemented**. Scoped by role like assignments."
       parameters:
         - name: assignmentId
           in: query
@@ -795,7 +856,7 @@ paths:
     get:
       tags: [Reports]
       summary: Get one report
-      description: "🚧 **Planned (Member B)**."
+      description: "✅ **Implemented**."
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
@@ -812,7 +873,7 @@ paths:
     patch:
       tags: [Reports]
       summary: Approve or reject a report
-      description: "🚧 **Planned (Member B)**. **ORG_SUPERVISOR, ACADEMIC_SUPERVISOR or ADMIN.** The student is notified."
+      description: "✅ **Implemented**. **ORG_SUPERVISOR, ACADEMIC_SUPERVISOR or ADMIN.** The student is notified."
       parameters:
         - $ref: '#/components/parameters/Id'
       requestBody:
@@ -842,7 +903,7 @@ paths:
       tags: [Supervision]
       summary: Monitoring list of my trainees
       description: |
-        🚧 **Planned (Member C)**. **ACADEMIC_SUPERVISOR or ORG_SUPERVISOR.**
+        ✅ **Implemented**. **ACADEMIC_SUPERVISOR or ORG_SUPERVISOR.**
         Returns their assignments with student info and quick stats for the monitoring screen.
       responses:
         '200':
@@ -855,7 +916,7 @@ paths:
                   type: object
                   properties:
                     assignment: { $ref: '#/components/schemas/Assignment' }
-                    attendanceRate: { type: number, example: 92.5, description: "Percent of PRESENT/LATE days" }
+                    attendanceRate: { type: number, nullable: true, example: 92.5, description: "Percent of PRESENT/LATE days; null when there are no attendance records yet" }
                     reportsSubmitted: { type: integer }
                     hasEvaluation: { type: boolean }
                     finalGrade: { type: number, nullable: true }
@@ -866,7 +927,7 @@ paths:
     post:
       tags: [Supervision]
       summary: Add a supervisor note
-      description: "🚧 **Planned (Member C)**. **ACADEMIC_SUPERVISOR** of that assignment, or ADMIN."
+      description: "✅ **Implemented**. **ACADEMIC_SUPERVISOR** of that assignment, or ADMIN."
       requestBody:
         required: true
         content:
@@ -891,7 +952,7 @@ paths:
     get:
       tags: [Supervision]
       summary: Notes of an assignment
-      description: "🚧 **Planned (Member C)**. The student, their supervisors, or ADMIN. Newest first."
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN. Newest first."
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
@@ -1003,7 +1064,7 @@ paths:
       tags: [Supervision]
       summary: Set the final grade
       description: |
-        🚧 **Planned (Member C)**. **ACADEMIC_SUPERVISOR** of that assignment, or ADMIN.
+        ✅ **Implemented**. **ACADEMIC_SUPERVISOR** of that assignment, or ADMIN.
         Also marks the assignment `COMPLETED` and notifies the student. 409 if a grade already exists.
       requestBody:
         required: true
@@ -1034,7 +1095,7 @@ paths:
     get:
       tags: [Supervision]
       summary: Get the final grade of an assignment
-      description: "🚧 **Planned (Member C)**. The student, their supervisors, or ADMIN."
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN."
       parameters:
         - name: assignmentId
           in: path
@@ -1389,7 +1450,7 @@ paths:
     get:
       tags: [Notifications]
       summary: My notifications
-      description: "🚧 **Planned (Member C)**. Any logged-in user. Newest first."
+      description: "✅ **Implemented**. Any logged-in user. Newest first."
       parameters:
         - name: unread
           in: query
@@ -1418,7 +1479,7 @@ paths:
     patch:
       tags: [Notifications]
       summary: Mark one notification as read
-      description: "🚧 **Planned (Member C)**. Only the owner."
+      description: "✅ **Implemented**. Only the owner."
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
@@ -1434,7 +1495,7 @@ paths:
     patch:
       tags: [Notifications]
       summary: Mark all my notifications as read
-      description: "🚧 **Planned (Member C)**."
+      description: "✅ **Implemented**."
       responses:
         '200':
           description: Done
@@ -1450,7 +1511,7 @@ paths:
     get:
       tags: [Statistics]
       summary: Impact indicators
-      description: "🚧 **Planned (Member C)**. **ADMIN or ACADEMIC_SUPERVISOR.** Feeds the dashboard and the project's impact indicators."
+      description: "✅ **Implemented**. **ADMIN or ACADEMIC_SUPERVISOR.** Feeds the dashboard and the project's impact indicators."
       responses:
         '200':
           description: Summary numbers
@@ -1468,6 +1529,7 @@ paths:
                   averageFinalGrade: { type: number, nullable: true }
                   wouldHireRate: { type: number, nullable: true, example: 82.5, description: "Percent of submitted evaluations where the organization wants to hire the trainee (the employment indicator)" }
                   averageAttendanceRate: { type: number, nullable: true }
+                  averageEvaluationScore: { type: number, nullable: true, example: 33.5, description: "Average organization evaluation of trainees, out of 40 (training-provider satisfaction indicator)" }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 

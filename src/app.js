@@ -52,16 +52,16 @@ app.use('/visits', require('./modules/visits/visits.routes'));
 app.use('/messages', require('./modules/messages/messages.routes'));
 app.use('/attachments', require('./modules/attachments/attachments.routes'));
 
-// ── Teammates: register your module routers here ──
-// Routers are mounted at the ROOT, so define FULL paths inside your router file and put
-// `authenticate` on each route (see src/modules/_template/example.routes.js).
-// app.use(require('./modules/opportunities/opportunities.routes'));
-// app.use(require('./modules/applications/applications.routes'));
-// app.use(require('./modules/attendance/attendance.routes'));
-// app.use(require('./modules/reports/reports.routes'));
-// app.use(require('./modules/supervision/supervision.routes'));   // notes, final grades, /supervisor/students
-// app.use(require('./modules/notifications/notifications.routes'));
-// app.use(require('./modules/stats/stats.routes'));
+// ── Feature modules ──
+// These routers are mounted at the ROOT: each route defines its full path and its own `authenticate`
+// (see src/modules/_template/example.routes.js).
+app.use(require('./modules/opportunities/opportunities.routes'));
+app.use(require('./modules/applications/applications.routes'));   // also: /opportunities/:id/applicants, /assignments/:id/letter
+app.use(require('./modules/attendance/attendance.routes'));
+app.use(require('./modules/reports/reports.routes'));
+app.use(require('./modules/supervision/supervision.routes'));     // notes, final grades, /supervisor/students
+app.use(require('./modules/notifications/notifications.routes'));
+app.use(require('./modules/stats/stats.routes'));
 
 app.use(notFound);
 app.use(errorHandler);

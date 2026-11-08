@@ -43,6 +43,19 @@ async function main() {
     },
   });
 
+  await prisma.trainingOpportunity.upsert({
+    where: { id: 1 },
+    update: {},
+    create: {
+      organizationId: org.id,
+      title: 'Backend Developer Trainee',
+      description: 'Work with the engineering team on Node.js APIs and PostgreSQL.',
+      seats: 3,
+      startDate: new Date('2027-01-15'),
+      endDate: new Date('2027-04-15'),
+    },
+  });
+
   console.log('Seed complete. Test accounts (password for all: ' + PASSWORD + '):');
   console.log(' admin@coop.test | student@coop.test | academic@coop.test | company@coop.test');
 }
