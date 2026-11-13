@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { authApi } from "./api";
 
 const menu = [
   { label: "الرئيسية", href: "#home" },
@@ -53,8 +54,7 @@ const features = [
   },
 ];
 
-// الصق هنا المقولة واسم صاحبها اللي كتبتهم
-// image: "/hero.jpg" أو "" لإخفاء الصورة
+
 const quote = {
   text: "الشباب هم الطاقة الحقيقية والقوة الحقيقية لتحقيق هذه الرؤية، وأهم ميزة لدينا هي أن شبابنا واعي ومثقف ومبدع ولديه قيم عالية",
   author: "صاحب السمو الملكي الأمير محمد بن سلمان بن عبدالعزيز ال سعود",
@@ -194,24 +194,33 @@ const contact = [
   { label: "البريد الإلكتروني", value: "info@example.com", href: "mailto:info@example.com" },
 ];
 
+const passwordFields = [
+  { name: "password", label: "كلمة المرور (8 أحرف على الأقل)", type: "password" },
+  { name: "confirmPassword", label: "تأكيد كلمة المرور", type: "password" },
+];
+
 const registerFields = {
   student: [
     { name: "fullName", label: "الاسم الكامل" },
     { name: "universityId", label: "الرقم الجامعي" },
     { name: "email", label: "البريد الإلكتروني", type: "email" },
-    { name: "phone", label: "رقم الجوال", type: "tel" },
+    { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
+    ...passwordFields,
   ],
   company: [
+    { name: "fullName", label: "اسم مسؤول الحساب" },
     { name: "orgName", label: "اسم الجهة" },
     { name: "crNumber", label: "رقم السجل التجاري" },
     { name: "email", label: "البريد الإلكتروني", type: "email" },
-    { name: "phone", label: "رقم الجوال", type: "tel" },
+    { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
+    ...passwordFields,
   ],
   supervisor: [
     { name: "fullName", label: "الاسم الكامل" },
-    { name: "college", label: "الكلية / القسم" },
+    { name: "college", label: "الكلية / القسم", optional: true },
     { name: "email", label: "البريد الإلكتروني", type: "email" },
-    { name: "phone", label: "رقم الجوال", type: "tel" },
+    { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
+    ...passwordFields,
   ],
 };
 
@@ -325,241 +334,285 @@ function PartnerCard({ p }) {
   );
 }
 
+// Where each role goes after logging in. Only the student portal exists so far.
+const PORTAL_URLS = {
+  STUDENT: import.meta.env.VITE_STUDENT_PORTAL_URL || "http://localhost:5173",
+};
+
+const ROLE_NAMES = {
+  ACADEMIC_SUPERVISOR: "المشرفين الأكاديميين",
+  ORG_SUPERVISOR: "الجهات التدريبية",
+  ADMIN: "مدير النظام",
+};
+
+// Backend messages -> Arabic
+const SERVER_ERRORS_AR = {
+  "This email is already registered": "البريد الإلكتروني مسجل مسبقاً.",
+  "This university ID is already registered": "الرقم الجامعي مسجل مسبقاً.",
+  "Too many sign-up attempts. Please try again later.": "محاولات تسجيل كثيرة، حاول لاحقاً.",
+};
+
+function serverErrorAr(err) {
+  if (err instanceof TypeError) return "تعذر الاتصال بالخادم. تأكد من تشغيل الـ backend.";
+  if (SERVER_ERRORS_AR[err.message]) return SERVER_ERRORS_AR[err.message];
+  if (err.message.startsWith("This commercial registration"))
+    return "رقم السجل التجاري مسجل مسبقاً، تواصل مع إدارة النظام.";
+  if (err.status === 400) return "تحقق من البيانات المدخلة (الصيغة غير صحيحة).";
+  return err.message;
+}
+
+const optional = (v) => (v && v.trim() ? v.trim() : undefined);
+
+// the form fields -> what the backend expects
+function buildRegisterPayload(roleId, f) {
+  const common = {
+    name: f.fullName.trim(),
+    email: f.email.trim(),
+    password: f.password,
+    phone: optional(f.phone),
+  };
+  if (roleId === "student") return { role: "STUDENT", ...common, universityId: f.universityId.trim() };
+  if (roleId === "company") {
+    return { role: "ORG_SUPERVISOR", ...common, organizationName: f.orgName.trim(), crNumber: f.crNumber.trim() };
+  }
+  return { role: "ACADEMIC_SUPERVISOR", ...common, department: optional(f.college) };
+}
+
 function LoginModal({ open, onClose, role, setRole }) {
-  const [mode, setMode] = useState("login"); // login | register
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [form, setForm] = useState({});
-  const [showPass, setShowPass] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [done, setDone] = useState(false);
+  const [notice, setNotice] = useState("");
 
   if (!open) return null;
 
-  const set = (name, value) => setForm((f) => ({ ...f, [name]: value }));
-
-  const reset = () => {
-    setForm({});
+  const switchMode = (next) => {
+    setMode(next);
     setError("");
-    setDone(false);
-    setShowPass(false);
+    setNotice("");
   };
 
-  const close = () => {
-    reset();
-    setMode("login");
-    onClose();
-  };
+  // save the session and open the right portal
+  const enterPortal = (token, user) => {
+    localStorage.setItem("token", token);
+    localStorage.setItem("user", JSON.stringify(user));
 
-  const switchMode = (m) => {
-    reset();
-    setMode(m);
-  };
-
-  const submitLogin = (e) => {
-    e.preventDefault();
-    if (!form.username?.trim() || !form.password) {
-      setError("أدخل اسم المستخدم وكلمة المرور");
-      return;
+    const portalUrl = PORTAL_URLS[user.role];
+    if (portalUrl) {
+      // localStorage is not shared between ports, so the session travels in the link's #hash
+      const session = btoa(encodeURIComponent(JSON.stringify({ token, user })));
+      window.location.href = `${portalUrl}/#session=${session}`;
+    } else {
+      setNotice(
+        `تم تسجيل الدخول بنجاح، لكن بوابة ${ROLE_NAMES[user.role] || "هذا الحساب"} قيد التطوير حالياً.`
+      );
     }
-    setError("");
-    setDone(true); // مؤقتًا: لاحقًا نربطه بالخادم
   };
 
-  const submitRegister = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
+    setLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const { token, user } = await authApi.login(email.trim(), password);
+      enterPortal(token, user);
+    } catch (err) {
+      if (err.status === 401) setError("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
+      else if (err.status === 403) setError("حسابك غير مفعّل بعد. إذا سجّلت حديثاً فبانتظار موافقة إدارة النظام.");
+      else setError(serverErrorAr(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setError("");
+    setNotice("");
+
     const fields = registerFields[role];
+    const f = form;
 
-    for (const f of fields) {
-      if (!form[f.name]?.trim()) {
-        setError(`أدخل: ${f.label}`);
-        return;
+    if (fields.some((x) => !x.optional && !(f[x.name] || "").trim())) {
+      setError("يرجى تعبئة جميع الحقول المطلوبة.");
+      return;
+    }
+    if (f.phone && !/^[0-9+\-\s]{5,20}$/.test(f.phone.trim())) {
+      setError("رقم الجوال غير صحيح.");
+      return;
+    }
+    if (f.password.length < 8) {
+      setError("كلمة المرور يجب ألا تقل عن 8 أحرف.");
+      return;
+    }
+    if (f.password !== f.confirmPassword) {
+      setError("كلمتا المرور غير متطابقتين.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const payload = buildRegisterPayload(role, f);
+      const data = await authApi.register(payload);
+
+      if (data.pending) {
+        // company / supervisor: waits for the admin
+        setEmail(payload.email);
+        setPassword("");
+        setForm({});
+        setMode("login");
+        setNotice("تم استلام طلب التسجيل بنجاح. سيتم تفعيل حسابك بعد موافقة إدارة النظام، وبعدها تستطيع تسجيل الدخول.");
+      } else {
+        // student: the account is active, go straight in
+        enterPortal(data.token, data.user);
       }
+    } catch (err) {
+      setError(serverErrorAr(err));
+    } finally {
+      setLoading(false);
     }
-    if (!/^\S+@\S+\.\S+$/.test(form.email)) {
-      setError("صيغة البريد الإلكتروني غير صحيحة");
-      return;
-    }
-    if (!form.password || form.password.length < 8) {
-      setError("كلمة المرور لازم تكون 8 أحرف على الأقل");
-      return;
-    }
-    if (form.password !== form.confirm) {
-      setError("كلمة المرور وتأكيدها غير متطابقتين");
-      return;
-    }
-    setError("");
-    setDone(true); // مؤقتًا: لاحقًا نرسلها للخادم
   };
 
   return (
-    <div
-      onClick={close}
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
-    >
-      <div
-        dir="rtl"
-        onClick={(e) => e.stopPropagation()}
-        className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-bold text-emerald-800">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" dir="rtl">
+      <div className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xl font-bold text-slate-800">
             {mode === "login" ? "تسجيل الدخول" : "حساب جديد"}
           </h2>
-          <button onClick={close} aria-label="إغلاق" className="rounded-lg px-2 py-1 text-xl hover:bg-slate-100">
+          <button
+            onClick={onClose}
+            aria-label="إغلاق"
+            className="rounded-lg px-2 py-1 text-xl text-slate-500 hover:bg-slate-100"
+          >
             ✕
           </button>
         </div>
 
-        <div className="mt-5 grid grid-cols-2 border-b border-slate-200 text-sm font-medium">
+        {/* التبويبات */}
+        <div className="mb-5 grid grid-cols-2 border-b border-slate-200">
           {[
-            { id: "login", label: "تسجيل الدخول" },
-            { id: "register", label: "حساب جديد" },
-          ].map((t) => (
+            ["login", "تسجيل الدخول"],
+            ["register", "حساب جديد"],
+          ].map(([id, label]) => (
             <button
-              key={t.id}
+              key={id}
               type="button"
-              onClick={() => switchMode(t.id)}
-              className={`pb-3 ${
-                mode === t.id
+              onClick={() => switchMode(id)}
+              className={`pb-3 text-sm font-medium transition ${
+                mode === id
                   ? "border-b-2 border-emerald-700 text-emerald-800"
-                  : "text-slate-500"
+                  : "text-slate-500 hover:text-slate-700"
               }`}
             >
-              {t.label}
+              {label}
             </button>
           ))}
         </div>
 
-        <div className="mt-5 grid grid-cols-3 gap-2 rounded-xl bg-slate-100 p-1">
-          {roles.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={() => {
-                setRole(r.id);
-                setError("");
-              }}
-              className={`rounded-lg py-2 text-sm font-medium ${
-                role === r.id ? "bg-white text-emerald-800 shadow-sm" : "text-slate-500"
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-
-        {done ? (
-          <div className="mt-6 rounded-lg bg-emerald-50 p-4 text-center text-sm text-emerald-800">
-            {mode === "login"
-              ? "تم استلام بياناتك (نسخة تجريبية). سيتم ربطها بالخادم لاحقًا."
-              : "تم استلام طلب التسجيل (نسخة تجريبية). سيتم ربطه بالخادم لاحقًا."}
-          </div>
-        ) : mode === "login" ? (
-          <form onSubmit={submitLogin} className="mt-6 space-y-4">
-            <Field label="اسم المستخدم أو البريد">
+        {mode === "login" && (
+          <form onSubmit={handleLogin} className="space-y-4">
+            <Field label="البريد الإلكتروني">
               <input
-                value={form.username || ""}
-                onChange={(e) => set("username", e.target.value)}
+                type="email"
+                required
+                dir="ltr"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="name@example.com"
+                className={inputCls}
+              />
+            </Field>
+            <Field label="كلمة المرور">
+              <input
+                type="password"
+                required
+                dir="ltr"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 className={inputCls}
               />
             </Field>
 
-            <Field label="كلمة المرور">
-              <div className="flex rounded-lg border border-slate-300 focus-within:border-emerald-600">
-                <input
-                  type={showPass ? "text" : "password"}
-                  value={form.password || ""}
-                  onChange={(e) => set("password", e.target.value)}
-                  className="w-full rounded-lg bg-transparent px-3 py-2 outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass(!showPass)}
-                  className="px-3 text-sm text-emerald-700"
-                >
-                  {showPass ? "إخفاء" : "إظهار"}
-                </button>
-              </div>
-            </Field>
-
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-center text-sm text-rose-600">
+                {error}
+              </p>
+            )}
+            {notice && (
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-center text-sm leading-relaxed text-emerald-800">
+                {notice}
+              </p>
+            )}
 
             <button
               type="submit"
-              className="w-full rounded-lg bg-emerald-700 py-3 font-medium text-white hover:bg-emerald-800"
+              disabled={loading}
+              className="w-full rounded-lg bg-emerald-700 py-3 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
             >
-              دخول
+              {loading ? "جاري تسجيل الدخول..." : "دخول"}
             </button>
-
-            <p className="text-center text-sm text-slate-600">
-              ما عندك حساب؟{" "}
-              <button
-                type="button"
-                onClick={() => switchMode("register")}
-                className="font-medium text-emerald-700 hover:underline"
-              >
-                أنشئ حساب جديد
-              </button>
-            </p>
           </form>
-        ) : (
-          <form onSubmit={submitRegister} className="mt-6 space-y-4">
+        )}
+
+        {mode === "register" && (
+          <form onSubmit={handleRegister} className="space-y-4">
+            <div className="grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1">
+              {roles.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => {
+                    setRole(r.id);
+                    setError("");
+                  }}
+                  className={`rounded-lg py-2 text-sm transition ${
+                    role === r.id ? "bg-white font-medium text-emerald-800 shadow-sm" : "text-slate-500"
+                  }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+
+            {role !== "student" && (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
+                حسابات الجهات التدريبية والمشرفين تُفعَّل بعد موافقة إدارة النظام، وستتمكن من تسجيل الدخول بعد الموافقة.
+              </p>
+            )}
+
             {registerFields[role].map((f) => (
-              <Field key={f.name} label={f.label}>
+              <Field key={f.name} label={f.optional ? `${f.label} (اختياري)` : f.label}>
                 <input
                   type={f.type || "text"}
+                  name={f.name}
+                  dir={f.type ? "ltr" : undefined}
+                  autoComplete={f.type === "password" ? "new-password" : "off"}
                   value={form[f.name] || ""}
-                  onChange={(e) => set(f.name, e.target.value)}
+                  onChange={(e) => setForm({ ...form, [f.name]: e.target.value })}
                   className={inputCls}
                 />
               </Field>
             ))}
 
-            <Field label="كلمة المرور (8 أحرف على الأقل)">
-              <div className="flex rounded-lg border border-slate-300 focus-within:border-emerald-600">
-                <input
-                  type={showPass ? "text" : "password"}
-                  value={form.password || ""}
-                  onChange={(e) => set("password", e.target.value)}
-                  className="w-full rounded-lg bg-transparent px-3 py-2 outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass(!showPass)}
-                  className="px-3 text-sm text-emerald-700"
-                >
-                  {showPass ? "إخفاء" : "إظهار"}
-                </button>
-              </div>
-            </Field>
-
-            <Field label="تأكيد كلمة المرور">
-              <input
-                type={showPass ? "text" : "password"}
-                value={form.confirm || ""}
-                onChange={(e) => set("confirm", e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-center text-sm text-rose-600">
+                {error}
+              </p>
+            )}
 
             <button
               type="submit"
-              className="w-full rounded-lg bg-emerald-700 py-3 font-medium text-white hover:bg-emerald-800"
+              disabled={loading}
+              className="w-full rounded-lg bg-emerald-700 py-3 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
             >
-              إنشاء الحساب
+              {loading ? "جاري إنشاء الحساب..." : "إنشاء الحساب"}
             </button>
-
-            <p className="text-center text-sm text-slate-600">
-              عندك حساب؟{" "}
-              <button
-                type="button"
-                onClick={() => switchMode("login")}
-                className="font-medium text-emerald-700 hover:underline"
-              >
-                سجّل الدخول
-              </button>
-            </p>
           </form>
         )}
       </div>
@@ -567,7 +620,7 @@ function LoginModal({ open, onClose, role, setRole }) {
   );
 }
 
-export default function TrainingHome() {
+export default function TrainingHomee() {
   const [open, setOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
   const [role, setRole] = useState("student");

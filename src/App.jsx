@@ -1,5 +1,5 @@
-import TrainingHome from './TrainingHome'
+import TrainingHome from './TrainingHome';
 
 export default function App() {
-  return <TrainingHome />
+  return <TrainingHome />;
 }
