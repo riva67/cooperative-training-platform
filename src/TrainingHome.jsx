@@ -63,7 +63,7 @@ const quote = {
 
 const partners = [
   {
-    name: "اسم الجهة الأولى",
+    name: "جهة حكوميه",
     location: "الرياض",
     sector: "القطاع الحكومي",
     opportunities: 12,
@@ -74,9 +74,9 @@ const partners = [
     phone: "9200XXXXX",
   },
   {
-    name: "اسم الجهة الثانية",
+    name: "جهة تعليمية",
     location: "جدة",
-    sector: "القطاع الخاص",
+    sector: "القطاع التعليمي",
     opportunities: 8,
     trainees: 210,
     about: "نبذة مختصرة عن الجهة ومجال عملها.",
@@ -85,9 +85,9 @@ const partners = [
     phone: "9200XXXXX",
   },
   {
-    name: "اسم الجهة الثالثة",
+    name: "جهة منشأة",
     location: "الدمام",
-    sector: "القطاع الخاص",
+    sector: "القطاع المنشأة",
     opportunities: 5,
     trainees: 120,
     about: "نبذة مختصرة عن الجهة ومجال عملها.",
@@ -96,9 +96,9 @@ const partners = [
     phone: "9200XXXXX",
   },
   {
-    name: "اسم الجهة الرابعة",
+    name: "جهة حكومية",
     location: "أبها",
-    sector: "القطاع غير الربحي",
+    sector: "القطاع الحكومي",
     opportunities: 4,
     trainees: 95,
     about: "نبذة مختصرة عن الجهة ومجال عملها.",
@@ -107,9 +107,9 @@ const partners = [
     phone: "9200XXXXX",
   },
   {
-    name: "اسم الجهة الخامسة",
+    name: "جهة تعليمية",
     location: "المدينة المنورة",
-    sector: "القطاع الحكومي",
+    sector: "القطاع التعليمي",
     opportunities: 9,
     trainees: 180,
     about: "نبذة مختصرة عن الجهة ومجال عملها.",
@@ -210,19 +210,44 @@ const registerFields = {
   company: [
     { name: "fullName", label: "اسم مسؤول الحساب" },
     { name: "orgName", label: "اسم الجهة" },
-    { name: "crNumber", label: "رقم السجل التجاري" },
+    { name: "orgType", label: "نوع الجهة", options: () => ORG_TYPES },
+    {
+      name: "orgSubtype",
+      label: "تصنيف الجهة",
+      labelFor: (f) =>
+        ({ PRIVATE: "نوع المنشأة", EDUCATIONAL: "نوع الجهة التعليمية", GOVERNMENT: "نوع الجهة الحكومية" })[f.orgType],
+      options: (f) => ORG_SUBTYPES[f.orgType] || [],
+      hidden: (f) => !f.orgType,
+    },
+    // government and educational bodies have no commercial registration number
+    { name: "crNumber", label: "رقم السجل التجاري", optional: (f) => f.orgType !== "PRIVATE" },
     { name: "email", label: "البريد الإلكتروني", type: "email" },
     { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
     ...passwordFields,
   ],
   supervisor: [
     { name: "fullName", label: "الاسم الكامل" },
-    { name: "college", label: "الكلية / القسم", optional: true },
+    { name: "college", label: "الكلية / القسم" },
     { name: "email", label: "البريد الإلكتروني", type: "email" },
     { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
     ...passwordFields,
   ],
 };
+
+// organization type -> what the backend expects (PRIVATE / EDUCATIONAL / GOVERNMENT)
+const ORG_TYPES = [
+  { value: "PRIVATE", label: "منشأة" },
+  { value: "EDUCATIONAL", label: "تعليمية" },
+  { value: "GOVERNMENT", label: "حكومية" },
+];
+const ORG_SUBTYPES = {
+  PRIVATE: ["شركة", "مصنع", "بنك / مؤسسة مالية", "مستشفى / مركز صحي خاص", "اتصالات وتقنية", "مقاولات وإنشاءات", "تجزئة وتجارة", "جمعية / منظمة غير ربحية", "أخرى"].map((x) => ({ value: x, label: x })),
+  EDUCATIONAL: ["جامعة حكومية", "جامعة أهلية", "كلية", "معهد", "مدرسة", "مركز تدريب", "أكاديمية"].map((x) => ({ value: x, label: x })),
+  GOVERNMENT: ["وزارة", "هيئة", "مؤسسة عامة", "أمانة / بلدية", "إمارة منطقة", "مستشفى / مركز صحي حكومي", "شركة حكومية"].map((x) => ({ value: x, label: x })),
+};
+
+const isOptional = (field, f) => (typeof field.optional === "function" ? field.optional(f) : !!field.optional);
+const isHidden = (field, f) => (field.hidden ? field.hidden(f) : false);
 
 const inputCls =
   "w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-emerald-600";
@@ -334,9 +359,13 @@ function PartnerCard({ p }) {
   );
 }
 
-// Where each role goes after logging in. Only the student portal exists so far.
+// Where each role goes after logging in. Set the address of a portal in .env once it is ready,
+// e.g. VITE_PROVIDER_PORTAL_URL=http://localhost:5175 (the training-provider portal).
 const PORTAL_URLS = {
   STUDENT: import.meta.env.VITE_STUDENT_PORTAL_URL || "http://localhost:5173",
+  ORG_SUPERVISOR: import.meta.env.VITE_PROVIDER_PORTAL_URL || "http://localhost:5175",
+  ACADEMIC_SUPERVISOR: import.meta.env.VITE_SUPERVISOR_PORTAL_URL,
+  ADMIN: import.meta.env.VITE_ADMIN_PORTAL_URL || "http://localhost:5176",
 };
 
 const ROLE_NAMES = {
@@ -350,11 +379,23 @@ const SERVER_ERRORS_AR = {
   "This email is already registered": "البريد الإلكتروني مسجل مسبقاً.",
   "This university ID is already registered": "الرقم الجامعي مسجل مسبقاً.",
   "Too many sign-up attempts. Please try again later.": "محاولات تسجيل كثيرة، حاول لاحقاً.",
+  "Too many login attempts. Please try again in a few minutes.": "محاولات دخول كثيرة، حاول بعد دقائق.",
 };
+
+// Login refused for an account that is not active: the backend sends `code`
+function inactiveAccountAr(err) {
+  if (err.code === "REJECTED") {
+    return "تم رفض طلب التسجيل من إدارة النظام." + (err.reason ? ` السبب: ${err.reason}` : "");
+  }
+  if (err.code === "SUSPENDED") return "تم إيقاف حسابك. يرجى التواصل مع إدارة النظام.";
+  return "حسابك قيد المراجعة. ستتمكن من تسجيل الدخول بعد موافقة إدارة النظام.";
+}
 
 function serverErrorAr(err) {
   if (err instanceof TypeError) return "تعذر الاتصال بالخادم. تأكد من تشغيل الـ backend.";
   if (SERVER_ERRORS_AR[err.message]) return SERVER_ERRORS_AR[err.message];
+  if (err.message.startsWith("Academic supervisors must register with"))
+    return "يجب التسجيل كمشرف ببريد الجامعة الرسمي.";
   if (err.message.startsWith("This commercial registration"))
     return "رقم السجل التجاري مسجل مسبقاً، تواصل مع إدارة النظام.";
   if (err.status === 400) return "تحقق من البيانات المدخلة (الصيغة غير صحيحة).";
@@ -373,9 +414,16 @@ function buildRegisterPayload(roleId, f) {
   };
   if (roleId === "student") return { role: "STUDENT", ...common, universityId: f.universityId.trim() };
   if (roleId === "company") {
-    return { role: "ORG_SUPERVISOR", ...common, organizationName: f.orgName.trim(), crNumber: f.crNumber.trim() };
+    return {
+      role: "ORG_SUPERVISOR",
+      ...common,
+      organizationName: f.orgName.trim(),
+      organizationType: f.orgType,
+      organizationSubtype: optional(f.orgSubtype),
+      crNumber: optional(f.crNumber),
+    };
   }
-  return { role: "ACADEMIC_SUPERVISOR", ...common, department: optional(f.college) };
+  return { role: "ACADEMIC_SUPERVISOR", ...common, department: f.college.trim() };
 }
 
 function LoginModal({ open, onClose, role, setRole }) {
@@ -423,7 +471,7 @@ function LoginModal({ open, onClose, role, setRole }) {
       enterPortal(token, user);
     } catch (err) {
       if (err.status === 401) setError("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
-      else if (err.status === 403) setError("حسابك غير مفعّل بعد. إذا سجّلت حديثاً فبانتظار موافقة إدارة النظام.");
+      else if (err.status === 403) setError(inactiveAccountAr(err));
       else setError(serverErrorAr(err));
     } finally {
       setLoading(false);
@@ -438,12 +486,16 @@ function LoginModal({ open, onClose, role, setRole }) {
     const fields = registerFields[role];
     const f = form;
 
-    if (fields.some((x) => !x.optional && !(f[x.name] || "").trim())) {
+    if (fields.some((x) => !isHidden(x, f) && !isOptional(x, f) && !(f[x.name] || "").trim())) {
       setError("يرجى تعبئة جميع الحقول المطلوبة.");
       return;
     }
     if (f.phone && !/^[0-9+\-\s]{5,20}$/.test(f.phone.trim())) {
       setError("رقم الجوال غير صحيح.");
+      return;
+    }
+    if (f.crNumber && f.crNumber.trim().length < 5) {
+      setError("رقم السجل التجاري غير صحيح.");
       return;
     }
     if (f.password.length < 8) {
@@ -472,7 +524,15 @@ function LoginModal({ open, onClose, role, setRole }) {
         enterPortal(data.token, data.user);
       }
     } catch (err) {
-      setError(serverErrorAr(err));
+      if (err.message === "This email is already registered") {
+        // the account exists: go to the login tab with the e-mail filled in
+        setEmail(f.email.trim());
+        setPassword("");
+        setMode("login");
+        setNotice("هذا البريد لديه حساب مسبقاً. أدخل كلمة المرور لتسجيل الدخول.");
+      } else {
+        setError(serverErrorAr(err));
+      }
     } finally {
       setLoading(false);
     }
@@ -586,19 +646,43 @@ function LoginModal({ open, onClose, role, setRole }) {
               </p>
             )}
 
-            {registerFields[role].map((f) => (
-              <Field key={f.name} label={f.optional ? `${f.label} (اختياري)` : f.label}>
-                <input
-                  type={f.type || "text"}
-                  name={f.name}
-                  dir={f.type ? "ltr" : undefined}
-                  autoComplete={f.type === "password" ? "new-password" : "off"}
-                  value={form[f.name] || ""}
-                  onChange={(e) => setForm({ ...form, [f.name]: e.target.value })}
-                  className={inputCls}
-                />
-              </Field>
-            ))}
+            {registerFields[role]
+              .filter((f) => !isHidden(f, form))
+              .map((f) => (
+                <Field
+                  key={f.name}
+                  label={`${f.labelFor?.(form) || f.label}${isOptional(f, form) ? " (اختياري)" : ""}`}
+                >
+                  {f.options ? (
+                    <select
+                      name={f.name}
+                      value={form[f.name] || ""}
+                      onChange={(e) =>
+                        // changing the organization type resets its sub-type
+                        setForm({ ...form, [f.name]: e.target.value, ...(f.name === "orgType" && { orgSubtype: "" }) })
+                      }
+                      className={`${inputCls} bg-white`}
+                    >
+                      <option value="">اختر...</option>
+                      {f.options(form).map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type={f.type || "text"}
+                      name={f.name}
+                      dir={f.type ? "ltr" : undefined}
+                      autoComplete={f.type === "password" ? "new-password" : "off"}
+                      value={form[f.name] || ""}
+                      onChange={(e) => setForm({ ...form, [f.name]: e.target.value })}
+                      className={inputCls}
+                    />
+                  )}
+                </Field>
+              ))}
 
             {error && (
               <p className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-center text-sm text-rose-600">
@@ -886,7 +970,7 @@ export default function TrainingHomee() {
       />
 
       <footer className="bg-emerald-950 py-6 text-center text-sm text-emerald-200">
-        © 2026 منصة التدريب التعاوني. جميع الحقوق محفوظة.
+        ©️ 2026 منصة التدريب التعاوني. جميع الحقوق محفوظة.
       </footer>
     </div>
   );

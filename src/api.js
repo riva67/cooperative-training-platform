@@ -21,6 +21,8 @@ async function apiRequest(endpoint, options = {}) {
     const error = new Error(data.error || 'حدث خطأ في الاتصال بالخادم');
     error.status = response.status;
     error.details = data.details;
+    error.code = data.code; // login refused: PENDING | REJECTED | SUSPENDED
+    error.reason = data.reason; // rejection reason (REJECTED)
     throw error;
   }
 
