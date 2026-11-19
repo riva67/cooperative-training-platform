@@ -9,9 +9,11 @@
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:seed": "node prisma/seed.js",
+    "db:demo": "node scripts/demo-data.js",
     "db:studio": "prisma studio",
     "test:smoke": "node scripts/smoke-test.js",
-    "test:flow": "node scripts/flow-test.js"
+    "test:flow": "node scripts/flow-test.js",
+    "test:provider": "node scripts/provider-test.js"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

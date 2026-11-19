@@ -15,6 +15,24 @@ enum Role {
   ADMIN
 }
 
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+  SUSPENDED
+}
+
+enum OrganizationType {
+  PRIVATE // منشأة
+  EDUCATIONAL // تعليمية
+  GOVERNMENT // حكومية
+}
+
+enum OpportunityType {
+  COOP // تدريب تعاوني
+  SUMMER // تدريب صيفي
+}
+
 enum OpportunityStatus {
   OPEN
   CLOSED
@@ -41,9 +59,11 @@ enum AttendanceStatus {
 }
 
 enum ReportType {
-  WEEKLY
-  FINAL
-  APPROVAL
+  WEEKLY // student
+  FINAL // student
+  APPROVAL // training provider
+  ABSENCE_WARNING // training provider: إنذار غياب
+  VISIT // training provider: تقرير زيارة
 }
 
 enum ReportStatus {
@@ -55,15 +75,22 @@ enum ReportStatus {
 
 // ───────────── Users & profiles ─────────────
 model User {
-  id           Int      @id @default(autoincrement())
+  id           Int           @id @default(autoincrement())
   name         String
-  email        String   @unique
+  email        String        @unique
   passwordHash String
   role         Role
-  isActive     Boolean  @default(true)
+  isActive     Boolean       @default(true)
   phone        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  status       AccountStatus @default(ACTIVE)
+  reviewedById Int?
+  reviewedAt   DateTime?
+  rejectReason String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  reviewedBy       User?  @relation("AccountReviews", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAccounts User[] @relation("AccountReviews")
 
   student            Student?
   academicSupervisor AcademicSupervisor?
@@ -74,8 +101,8 @@ model User {
   notes              SupervisorNote[]
   evaluations        Evaluation[]
   finalGrades        FinalGrade[]
-  sentMessages       Message[]    @relation("SentMessages")
-  receivedMessages   Message[]    @relation("ReceivedMessages")
+  sentMessages       Message[]           @relation("SentMessages")
+  receivedMessages   Message[]           @relation("ReceivedMessages")
   attachments        Attachment[]
 }
 
@@ -102,9 +129,11 @@ model AcademicSupervisor {
 }
 
 model Organization {
-  id           Int     @id @default(autoincrement())
+  id           Int              @id @default(autoincrement())
   name         String
-  sector       String?
+  type         OrganizationType @default(PRIVATE)
+  crNumber     String?          @unique
+  sector       String? // sub-type chosen on the sign-up form (شركة، مصنع، جامعة أهلية، وزارة ...)
   city         String?
   contactEmail String?
   phone        String?
@@ -131,15 +160,22 @@ model TrainingOpportunity {
   organizationId Int
   title          String
   description    String
+  type           OpportunityType   @default(COOP)
   seats          Int               @default(1)
   startDate      DateTime
   endDate        DateTime
+  deadline       DateTime? // last day to apply
+  location       String?
+  target         String? // target major / college
+  requirements   String?
   status         OpportunityStatus @default(OPEN)
   createdAt      DateTime          @default(now())
 
   organization Organization         @relation(fields: [organizationId], references: [id])
   applications Application[]
   assignments  TrainingAssignment[]
+
+  @@index([organizationId, status])
 }
 
 model Application {
@@ -154,19 +190,26 @@ model Application {
   opportunity TrainingOpportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
 
   @@unique([studentId, opportunityId])
+  @@index([opportunityId, status])
 }
 
 model TrainingAssignment {
-  id                   Int              @id @default(autoincrement())
-  studentId            Int
-  opportunityId        Int
-  academicSupervisorId Int
-  orgSupervisorId      Int
-  startDate            DateTime
-  endDate              DateTime
-  status               AssignmentStatus @default(ACTIVE)
-  semester             String?
-  academicYear         String?
+  id                    Int              @id @default(autoincrement())
+  studentId             Int
+  opportunityId         Int
+  academicSupervisorId  Int
+  orgSupervisorId       Int
+  startDate             DateTime
+  endDate               DateTime
+  status                AssignmentStatus @default(ACTIVE)
+  semester              String?
+  academicYear          String?
+  // نموذج (1) مباشرة المتدرب: set automatically on the first check-in, or confirmed by the training provider
+  commencementDate      DateTime?        @db.Date
+  // impact indicator "post-training employment" (reported after the training)
+  employedAfterTraining Boolean?
+  employerName          String?
+  employmentRecordedAt  DateTime?
 
   student            Student             @relation(fields: [studentId], references: [id])
   opportunity        TrainingOpportunity @relation(fields: [opportunityId], references: [id])
@@ -178,6 +221,10 @@ model TrainingAssignment {
   notes      SupervisorNote[]
   evaluation Evaluation?
   finalGrade FinalGrade?
+
+  @@index([studentId, status])
+  @@index([academicSupervisorId])
+  @@index([orgSupervisorId])
 }
 
 model Attendance {
@@ -199,12 +246,18 @@ model Report {
   type          ReportType
   title         String
   content       String
+  weekNumber    Int? // WEEKLY reports
+  attachmentId  Int? // e.g. the report as a Word / PDF file
   submittedById Int
   status        ReportStatus @default(SUBMITTED)
   createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @default(now()) @updatedAt
 
   assignment  TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   submittedBy User               @relation(fields: [submittedById], references: [id])
+  attachment  Attachment?        @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+
+  @@index([assignmentId, type])
 }
 
 model SupervisorNote {
@@ -219,16 +272,20 @@ model SupervisorNote {
 }
 
 model Evaluation {
-  id           Int      @id @default(autoincrement())
-  assignmentId Int      @unique // one evaluation form per trainee
-  evaluatorId  Int
+  id             Int      @id @default(autoincrement())
+  assignmentId   Int      @unique // one evaluation form per trainee
+  evaluatorId    Int
   // { "<criterion key>": { "score": 0-5, "notes": "..." } }  (criteria: src/modules/evaluations/criteria.js)
-  scores       Json
-  totalScore   Float // out of 40
-  wouldHire    Boolean // "Do you want to hire the trainee after graduation?"
-  noHireReason String?
-  comments     String?
-  createdAt    DateTime @default(now())
+  scores         Json
+  totalScore     Float // out of 40
+  wouldHire      Boolean // "Do you want to hire the trainee after graduation?"
+  noHireReason   String?
+  comments       String?
+  evaluatorTitle String? // المسمى الوظيفي
+  signature      String? // signature image as a data URL (data:image/png;base64,...)
+  // impact indicator "training-provider satisfaction": 1 (very unsatisfied) .. 5 (very satisfied) with the programme
+  satisfaction   Int?
+  createdAt      DateTime @default(now())
 
   assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   evaluator  User               @relation(fields: [evaluatorId], references: [id])
@@ -310,6 +367,7 @@ model Attachment {
 
   uploadedBy User      @relation(fields: [uploadedById], references: [id])
   messages   Message[]
+  reports    Report[]
 }
 
 model Message {

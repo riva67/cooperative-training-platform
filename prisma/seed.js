@@ -10,8 +10,8 @@ async function main() {
 
   const org = await prisma.organization.upsert({
     where: { id: 1 },
-    update: { phone: '0126000000' },
-    create: { name: 'Tech Solutions Co.', sector: 'IT', city: 'Jeddah', contactEmail: 'hr@techsolutions.test', phone: '0126000000' },
+    update: { phone: '0126000000', type: 'PRIVATE', crNumber: '4030000001' },
+    create: { name: 'Tech Solutions Co.', type: 'PRIVATE', crNumber: '4030000001', sector: 'IT', city: 'Jeddah', contactEmail: 'hr@techsolutions.test', phone: '0126000000' },
   });
 
   await prisma.user.upsert({
@@ -43,18 +43,22 @@ async function main() {
     },
   });
 
-  await prisma.trainingOpportunity.upsert({
-    where: { id: 1 },
-    update: {},
-    create: {
-      organizationId: org.id,
-      title: 'Backend Developer Trainee',
-      description: 'Work with the engineering team on Node.js APIs and PostgreSQL.',
-      seats: 3,
-      startDate: new Date('2027-01-15'),
-      endDate: new Date('2027-04-15'),
-    },
-  });
+  // find the test opportunity by organization + title (an upsert on a fixed id created a duplicate on every run)
+  const oppData = {
+    organizationId: org.id,
+    title: 'Backend Developer Trainee',
+    description: 'Work with the engineering team on Node.js APIs and PostgreSQL.',
+    type: 'COOP',
+    seats: 3,
+    startDate: new Date('2027-01-15'),
+    endDate: new Date('2027-04-15'),
+    deadline: new Date('2027-01-05'),
+    location: 'Jeddah, head office',
+    target: 'Computer Science',
+    requirements: 'Basic JavaScript and SQL knowledge.',
+  };
+  const existingOpp = await prisma.trainingOpportunity.findFirst({ where: { organizationId: org.id, title: oppData.title } });
+  if (!existingOpp) await prisma.trainingOpportunity.create({ data: oppData });
 
   console.log('Seed complete. Test accounts (password for all: ' + PASSWORD + '):');
   console.log(' admin@coop.test | student@coop.test | academic@coop.test | company@coop.test');

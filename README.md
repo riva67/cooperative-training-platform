@@ -32,22 +32,27 @@ npm run test:smoke
 ```
 
 It tests login, roles/permissions, assignments and logs, and cleans up after itself. Run it after pulling changes.
+Two more end-to-end checks: `npm run test:flow` (training lifecycle) and `npm run test:provider`
+(account approval + training-provider portal + impact indicators).
 
 ## What is implemented
 
 | Area | Endpoints | Owner |
 |---|---|---|
-| Auth | `POST /auth/login`, `GET /auth/me`, `PATCH /auth/password` | Lead |
-| Users (admin) | `POST/GET /users`, `GET /users/:id`, `PATCH /users/:id/role`, `PATCH /users/:id/active` | Lead |
+| Auth | `POST /auth/register`, `POST /auth/login`, `GET /auth/me`, `PATCH /auth/password`, `PATCH /auth/profile` | Lead |
+| Users (admin) | `POST/GET /users` (`?status=PENDING` = requests), `GET /users/:id`, `PATCH /users/:id/role`, `PATCH /users/:id/active` (approve), `POST /users/:id/reject` | Lead |
+| Organizations | `GET/POST /organizations`, `GET/PATCH /organizations/:id` (type: PRIVATE / EDUCATIONAL / GOVERNMENT) | ✅ done |
 | Assignments | `POST /assignments`, `GET /assignments`, `GET /assignments/:id`, `PATCH /assignments/:id/status` | Lead |
 | Logs (admin) | `GET /logs` | Lead |
 | Evaluation form (نموذج تقييم المتدرب) | `GET /evaluations/criteria`, `POST /evaluations`, `GET /evaluations`, `GET /evaluations/:assignmentId` | Lead |
 | Field visits (الزيارات الميدانية) | `POST /visits`, `GET /visits`, `PATCH /visits/:id`, `/respond`, `/cancel` | Lead |
 | Messaging (chat + email-style + files) | `/messages/*`, `/attachments/*` | Lead |
-| Opportunities (`/opportunities`) | create, list, get, update/close | ✅ done |
+| Opportunities (`/opportunities`) | create, list (`?mine=true`, `?organizationType=`, `?type=`), get, update/close, delete (no applicants), `/opportunities/summary` (seats) | ✅ done |
 | Applications (`/applications`) | apply, list, nominate/approve/reject; `/opportunities/:id/applicants` (sorted by GPA); `/assignments/:id/letter` (training letter) | ✅ done |
-| Attendance | `/attendance/check-in`, `/attendance/check-out`, `PATCH /attendance/:id`, `/assignments/:id/attendance` | ✅ done |
-| Reports | `/reports` (submit, list, get), `PATCH /reports/:id/status` | ✅ done |
+| Attendance | `/attendance/check-in`, `/attendance/check-out`, `PATCH /attendance/:id`, `POST /attendance/mark`, `/assignments/:id/attendance` | ✅ done |
+| Form (1) commencement | `GET/PATCH /assignments/:id/commencement` (date filled on the first check-in) | ✅ done |
+| Reports | `/reports` (submit with file + week number, list, get), `PATCH /reports/:id` (edit / resubmit), `PATCH /reports/:id/status`; provider types `ABSENCE_WARNING`, `VISIT` | ✅ done |
+| Employment | `PATCH /assignments/:id/employment` (after completion) | ✅ done |
 | Supervision | `/supervisor/students`, `/notes`, `/assignments/:id/notes`, `/final-grades` | ✅ done |
 | Notifications | `GET /notifications`, `PATCH /notifications/:id/read`, `PATCH /notifications/read-all` | ✅ done |
 | Statistics | `GET /stats/summary` (completion rate, would-hire rate, attendance, grades, evaluation average) | ✅ done |
@@ -61,8 +66,19 @@ After `APPROVED`, an admin creates the assignment with `POST /assignments`. The 
 |---|---|
 | Number of training opportunities | `stats/summary` -> `totalOpportunities`, `openOpportunities` |
 | Training completion rate | `completionRate` |
-| Training provider satisfaction | `averageEvaluationScore` (out of 40) |
-| Post-training employment | `wouldHireRate` |
+| Training provider satisfaction | `providerSatisfaction` (1..5, from `satisfaction` in the evaluation form) |
+| Post-training employment | `employmentRate` (from `PATCH /assignments/:id/employment`); `wouldHireRate` = intention only |
+
+## Account approval
+| Role | Sign-up | Can log in |
+|---|---|---|
+| Student | `POST /auth/register` | immediately |
+| Academic supervisor (مشرف) | `POST /auth/register` | after an admin approves (`status` PENDING -> ACTIVE) |
+| Training provider (جهة تدريبية) | `POST /auth/register` (+ organization name, type, optional CR number) | after an admin approves |
+| Admin | never self-registers | — |
+
+A refused login returns 403 with `code`: `PENDING`, `REJECTED` (+ `reason`) or `SUSPENDED`.
+The login response of a training provider includes `user.organization.type`, used by the provider portal.
 
 ## Feature notes
 

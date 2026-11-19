@@ -35,6 +35,7 @@ function errorHandler(err, req, res, next) {
   res.status(status).json({
     error: status === 500 ? 'Internal server error' : err.message,
     ...(err.details && { details: err.details }),
+    ...(status !== 500 && err.extra),
   });
 }
 

@@ -16,6 +16,11 @@ const MIN_WORK_HOURS = Number(process.env.MIN_WORK_HOURS) || 5;
 
 const assignmentBody = z.object({ assignmentId: z.number().int().positive() });
 const statusSchema = z.object({ status: z.enum(['PRESENT', 'ABSENT', 'LATE', 'EXCUSED']) });
+const markSchema = z.object({
+  assignmentId: z.number().int().positive(),
+  date: z.coerce.date(),
+  status: z.enum(['PRESENT', 'ABSENT', 'LATE', 'EXCUSED']),
+});
 
 router.param('id', (req, res, next, value) => {
   if (!/^\d+$/.test(value)) return next(new HttpError(400, 'Invalid id'));
@@ -56,6 +61,11 @@ router.post(
     } catch (err) {
       if (err.code === 'P2002') throw new HttpError(409, 'You have already checked in today'); // double-tap race
       throw err;
+    }
+
+    // نموذج (1): the first check-in is the commencement date (unless the provider already set it)
+    if (!assignment.commencementDate) {
+      await prisma.trainingAssignment.update({ where: { id: assignment.id }, data: { commencementDate: today } });
     }
 
     res.status(201).json(record);
@@ -115,6 +125,38 @@ router.patch(
     }
 
     res.json(updated);
+  })
+);
+
+// POST /attendance/mark  -> ORG_SUPERVISOR records a day (e.g. ABSENT when the trainee never checked in)
+router.post(
+  '/attendance/mark',
+  authenticate,
+  requireRole('ORG_SUPERVISOR'),
+  validate(markSchema),
+  asyncHandler(async (req, res) => {
+    const { assignmentId, status } = req.body;
+    const assignment = await getAccessibleAssignment(req.user, assignmentId, {
+      include: { student: true },
+      roles: ['ORG_SUPERVISOR'],
+    });
+
+    const day = dateOnly(req.body.date);
+    if (day < dateOnly(assignment.startDate) || day > dateOnly(assignment.endDate)) {
+      throw new HttpError(400, 'The date is outside the training period');
+    }
+    if (day > todayDate()) throw new HttpError(400, 'You cannot record attendance for a future date');
+
+    const record = await prisma.attendance.upsert({
+      where: { assignmentId_date: { assignmentId: assignment.id, date: day } },
+      update: { status },
+      create: { assignmentId: assignment.id, date: day, status },
+    });
+
+    await logAction(req.user.id, 'ATTENDANCE_MARKED', 'Attendance', record.id, { date: day.toISOString().split('T')[0], status });
+    await notify(assignment.student.userId, `Your attendance on ${day.toISOString().split('T')[0]} was marked ${status}`);
+
+    res.status(201).json(record);
   })
 );
 

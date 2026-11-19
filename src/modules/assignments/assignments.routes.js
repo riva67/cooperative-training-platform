@@ -160,4 +160,75 @@ router.patch(
   })
 );
 
+// ───────── نموذج (1): مباشرة المتدرب بجهة التدريب ─────────
+const commencementSchema = z.object({ commencementDate: z.coerce.date() });
+
+// GET /assignments/:id/commencement  -> data of form (1) (the frontend renders / prints it)
+router.get(
+  '/:id/commencement',
+  asyncHandler(async (req, res) => {
+    const a = await getAccessibleAssignment(req.user, req.params.id, { include: fullInclude });
+    res.json({
+      title: 'نموذج (1) مباشرة المتدرب بجهة التدريب',
+      semester: a.semester,
+      academicYear: a.academicYear,
+      organization: { id: a.opportunity.organization.id, name: a.opportunity.organization.name },
+      trainee: { name: a.student.user.name, universityId: a.student.universityId, major: a.student.major },
+      fieldSupervisor: { name: a.orgSupervisor.user.name, position: a.orgSupervisor.position },
+      commencementDate: a.commencementDate ? a.commencementDate.toISOString().split('T')[0] : null,
+    });
+  })
+);
+
+// PATCH /assignments/:id/commencement  -> the training provider confirms / corrects the start date
+// (it is also filled automatically on the trainee's first check-in)
+router.patch(
+  '/:id/commencement',
+  requireRole('ORG_SUPERVISOR'),
+  validate(commencementSchema),
+  asyncHandler(async (req, res) => {
+    const a = await getAccessibleAssignment(req.user, req.params.id, { roles: ['ORG_SUPERVISOR'], include: fullInclude });
+    if (a.status === 'CANCELLED') throw new HttpError(400, 'This assignment was cancelled');
+
+    const updated = await prisma.trainingAssignment.update({
+      where: { id: a.id }, data: { commencementDate: req.body.commencementDate }, include: fullInclude,
+    });
+    await logAction(req.user.id, 'COMMENCEMENT_CONFIRMED', 'TrainingAssignment', a.id);
+    await notify(a.academicSupervisor.userId, `${a.student.user.name} started training at ${a.opportunity.organization.name}`);
+    res.json(updated);
+  })
+);
+
+// ───────── Post-training employment (impact indicator) ─────────
+const employmentSchema = z
+  .object({
+    employed: z.boolean(),
+    employerName: z.string().trim().max(150).optional(),
+  })
+  .refine((d) => !d.employed || d.employerName, { path: ['employerName'], message: 'employerName is required when employed is true' });
+
+// PATCH /assignments/:id/employment  -> the student (own), their academic supervisor or admin records
+// whether the trainee got a job after the training
+router.patch(
+  '/:id/employment',
+  requireRole('STUDENT', 'ACADEMIC_SUPERVISOR'),
+  validate(employmentSchema),
+  asyncHandler(async (req, res) => {
+    const a = await getAccessibleAssignment(req.user, req.params.id, { roles: ['STUDENT', 'ACADEMIC_SUPERVISOR'] });
+    if (a.status !== 'COMPLETED') throw new HttpError(400, 'Employment can be recorded after the training is completed');
+
+    const updated = await prisma.trainingAssignment.update({
+      where: { id: a.id },
+      data: {
+        employedAfterTraining: req.body.employed,
+        employerName: req.body.employed ? req.body.employerName : null,
+        employmentRecordedAt: new Date(),
+      },
+      include: fullInclude,
+    });
+    await logAction(req.user.id, 'EMPLOYMENT_RECORDED', 'TrainingAssignment', a.id, { employed: req.body.employed });
+    res.json(updated);
+  })
+);
+
 module.exports = router;

@@ -45,6 +45,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok', time: new Date().toISO
 // ── Module routes ──
 app.use('/auth', require('./modules/auth/auth.routes'));
 app.use('/users', require('./modules/users/users.routes'));
+app.use('/organizations', require('./modules/organizations/organizations.routes'));
 app.use('/assignments', require('./modules/assignments/assignments.routes'));
 app.use('/logs', require('./modules/logs/logs.routes'));
 app.use('/evaluations', require('./modules/evaluations/evaluations.routes'));

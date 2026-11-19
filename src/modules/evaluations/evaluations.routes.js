@@ -26,6 +26,15 @@ const createSchema = z
     wouldHire: z.boolean(),
     noHireReason: z.string().max(1000).optional(),
     comments: z.string().max(2000).optional(),
+    evaluatorTitle: z.string().trim().max(100).optional(), // المسمى الوظيفي
+    // drawn signature from the form, as a PNG/JPEG data URL (max ~300 KB)
+    signature: z
+      .string()
+      .max(400000, 'Signature image is too large')
+      .regex(/^data:image\/(png|jpeg);base64,[A-Za-z0-9+/=]+$/, 'signature must be a PNG or JPEG data URL')
+      .optional(),
+    // impact indicator: the provider's satisfaction with the cooperative-training programme, 1..5
+    satisfaction: z.number().int().min(1).max(5).optional(),
   })
   .superRefine((d, ctx) => {
     if (!d.wouldHire && !(d.noHireReason && d.noHireReason.trim())) {
@@ -64,7 +73,13 @@ function toForm(ev) {
     wouldHire: ev.wouldHire,
     noHireReason: ev.noHireReason,
     comments: ev.comments,
-    evaluator: { id: ev.evaluator.id, name: ev.evaluator.name, jobTitle: ev.evaluator.orgSupervisor?.position ?? null },
+    satisfaction: ev.satisfaction,
+    signature: ev.signature,
+    evaluator: {
+      id: ev.evaluator.id,
+      name: ev.evaluator.name,
+      jobTitle: ev.evaluatorTitle ?? ev.evaluator.orgSupervisor?.position ?? null,
+    },
     evaluatedAt: ev.createdAt,
   };
 }
@@ -85,7 +100,7 @@ router.post(
   requireRole('ORG_SUPERVISOR'),
   validate(createSchema),
   asyncHandler(async (req, res) => {
-    const { assignmentId, scores, wouldHire, noHireReason, comments } = req.body;
+    const { assignmentId, scores, wouldHire, noHireReason, comments, evaluatorTitle, signature, satisfaction } = req.body;
 
     const assignment = await getAccessibleAssignment(req.user, assignmentId, {
       include: { student: { include: { user: { select: { name: true } } } }, academicSupervisor: true },
@@ -107,6 +122,9 @@ router.post(
         wouldHire,
         noHireReason: wouldHire ? null : noHireReason.trim(),
         comments,
+        evaluatorTitle,
+        signature,
+        satisfaction,
       },
       include: formInclude,
     });

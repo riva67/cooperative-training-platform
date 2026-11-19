@@ -62,7 +62,8 @@ router.get(
       return {
         assignment,
         attendanceRate: attendance.length ? round1((attended / attendance.length) * 100) : null,
-        reportsSubmitted: reports.filter((r) => r.type !== 'APPROVAL' && r.status !== 'DRAFT').length,
+        reportsSubmitted: reports.filter((r) => (r.type === 'WEEKLY' || r.type === 'FINAL') && r.status !== 'DRAFT').length,
+        absenceWarnings: reports.filter((r) => r.type === 'ABSENCE_WARNING').length,
         hasEvaluation: Boolean(evaluation),
         finalGrade: finalGrade ? finalGrade.grade : null,
       };

@@ -4,6 +4,7 @@ const asyncHandler = require('../../utils/asyncHandler');
 const { getStudentProfile, getOrgSupervisorProfile, userIdsByRole } = require('../../utils/profiles');
 const { logAction } = require('../../utils/audit');
 const { notify } = require('../../utils/notify');
+const { todayDate, dateOnly } = require('../../utils/dates');
 
 const userSelect = { id: true, name: true, email: true };
 const appInclude = {
@@ -44,6 +45,12 @@ const createApplication = asyncHandler(async (req, res) => {
   });
   if (!opportunity) throw new HttpError(404, 'Opportunity not found');
   if (opportunity.status !== 'OPEN') throw new HttpError(400, 'This opportunity is closed');
+  if (opportunity.deadline && todayDate() > dateOnly(opportunity.deadline)) {
+    throw new HttpError(400, 'The application deadline for this opportunity has passed');
+  }
+
+  const active = await prisma.trainingAssignment.count({ where: { studentId: student.id, status: 'ACTIVE' } });
+  if (active) throw new HttpError(400, 'You already have an active training assignment');
 
   const existing = await prisma.application.findUnique({
     where: { studentId_opportunityId: { studentId: student.id, opportunityId } },
@@ -123,6 +130,12 @@ const updateStatus = asyncHandler(async (req, res) => {
 
   if (status !== 'REJECTED' && application.opportunity.status !== 'OPEN') {
     throw new HttpError(400, 'This opportunity is closed');
+  }
+  if (status === 'APPROVED') {
+    const approved = await prisma.application.count({ where: { opportunityId: application.opportunityId, status: 'APPROVED' } });
+    if (approved >= application.opportunity.seats) {
+      throw new HttpError(409, 'All seats of this opportunity are taken. Increase the seats or reject the application');
+    }
   }
 
   const updated = await prisma.application.update({ where: { id }, data: { status }, include: appInclude });

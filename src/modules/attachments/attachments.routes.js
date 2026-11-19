@@ -6,6 +6,7 @@ const prisma = require('../../config/prisma');
 const { UPLOAD_DIR } = require('../../config/uploads');
 const HttpError = require('../../utils/httpError');
 const asyncHandler = require('../../utils/asyncHandler');
+const { assignmentAccessWhere } = require('../../utils/access');
 const { authenticate } = require('../../middleware/auth');
 
 const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -70,7 +71,8 @@ router.post(
   })
 );
 
-// GET /attachments/:id  -> download (uploader, sender/recipient of a message that carries it, or admin)
+// GET /attachments/:id  -> download (uploader, sender/recipient of a message that carries it,
+//   anyone who can see the report it is attached to, or admin)
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
@@ -84,6 +86,13 @@ router.get(
         where: { attachmentId: id, OR: [{ senderId: req.user.id }, { recipientId: req.user.id }] },
       });
       allowed = linked > 0;
+    }
+    if (!allowed) {
+      // attached to a report on an assignment this user can access
+      const inReport = await prisma.report.count({
+        where: { attachmentId: id, assignment: assignmentAccessWhere(req.user) },
+      });
+      allowed = inReport > 0;
     }
     if (!allowed) throw new HttpError(403, 'You do not have access to this file');
 
