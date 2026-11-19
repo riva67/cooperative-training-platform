@@ -1,271 +1,354 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import './App.css';
 import Visits from './visits';
 import EvaluationSection from './EvaluationSection';
 import coverImg from './assets/COVER.jpeg';
-
-// ===== إعدادات الربط مع المنصة الرئيسية =====
-const DEMO_MODE = true; // اجعلها false بعد الربط الفعلي
-const LOGIN_API = 'رابط_تسجيل_الدخول'; // يحدده فريق الواجهة الخلفية
-// حوّل قيم نوع الجهة القادمة من المنصة الرئيسية إلى العربي (عدّل المفاتيح حسب ما ترجعه المنصة)
-const ENTITY_TYPES = { establishment: 'منشأة', educational: 'تعليمية', government: 'حكومية' };
+import {
+  api, errorAr, getToken, getSavedUser, saveSession, clearSession, consumeHashSession, MAIN_PORTAL_URL,
+  ORG_TYPE_AR, OPP_TYPE_AR, OPP_STATUS_AR, APP_STATUS_AR, ymd, dmy,
+} from './api';
 
 const TABS = [
   { key: 'home', label: 'الرئيسية' },
   { key: 'opportunities', label: 'فرص التدريب', desc: 'أدر الفرص التي قدّمتها جهتك وتابع حالة التقديم عليها.' },
   { key: 'capacity', label: 'المقاعد التدريبية', desc: 'تابع المقاعد المتاحة والشاغرة في جهتك.' },
-  { key: 'evaluation', label: 'تقييم المتدرب', desc: 'قيّم حضور المتدربين ومهامهم والتقييم النهائي.' },
-  { key: 'visits', label: 'زيارات المشرف', desc: 'وثّق زيارات المشرف الأكاديمي الميدانية.' },
-  { key: 'reports', label: 'التقارير', desc: 'أرسل تقارير الزيارات وإنذارات الغياب.' },
+  { key: 'evaluation', label: 'تقييم المتدرب', desc: 'عبّئ نموذج تقييم المتدرب من جهة التدريب.' },
+  { key: 'visits', label: 'زيارات المشرف', desc: 'رد على طلبات الزيارات الميدانية من المشرف الأكاديمي.' },
+  { key: 'reports', label: 'التقارير', desc: 'أرسل تقارير الزيارات وإنذارات الغياب، وراجع تقارير المتدربين.' },
 ];
 
 const emptyOppForm = {
-  title: '', company: '', description: '', type: 'تدريب تعاوني', status: 'متاح',
+  title: '', description: '', type: 'COOP', status: 'OPEN',
   startDate: '', endDate: '', deadline: '', seats: 1,
-  location: '', duration: '', target: '', requirements: '',
+  location: '', target: '', requirements: '',
 };
 
 // البنود الإلزامية قبل النشر
 const REQUIRED_FIELDS = {
   title: 'عنوان الفرصة',
-  company: 'اسم الجهة',
   description: 'وصف الفرصة',
   startDate: 'تاريخ بداية التدريب',
   endDate: 'تاريخ نهاية التدريب',
   deadline: 'آخر موعد للتقديم',
   location: 'موقع التدريب',
-  duration: 'مدة التدريب',
   target: 'الفئة المستهدفة',
   requirements: 'متطلبات الفرصة',
 };
 
-const fmtDate = (d) => (d ? d.split('-').reverse().join('/') : '');
+// مدة التدريب تُحسب من التاريخين
+function durationOf(start, end) {
+  if (!start || !end) return '';
+  const days = Math.round((new Date(end) - new Date(start)) / 864e5) + 1;
+  if (days < 14) return `${days} يوم`;
+  if (days < 60) return `${Math.round(days / 7)} أسابيع`;
+  return `${Math.round(days / 30)} أشهر`;
+}
+
+// backend opportunity -> the shape the cards use
+const toUi = (o) => ({
+  id: o.id,
+  icon: o.type === 'SUMMER' ? '☀️' : '💼',
+  title: o.title,
+  company: o.organization?.name,
+  description: o.description,
+  type: OPP_TYPE_AR[o.type] || o.type,
+  typeCode: o.type,
+  status: OPP_STATUS_AR[o.status],
+  statusCode: o.status,
+  startDate: ymd(o.startDate),
+  endDate: ymd(o.endDate),
+  deadline: o.deadline ? dmy(o.deadline) : 'غير محدد',
+  deadlineIso: ymd(o.deadline),
+  seats: o.seats,
+  seatsTaken: o.seatsTaken,
+  seatsAvailable: o.seatsAvailable,
+  applicationsCount: o.applicationsCount,
+  location: o.location || '—',
+  duration: durationOf(o.startDate, o.endDate),
+  target: o.target || '—',
+  requirements: o.requirements || '',
+});
+
+const statusClass = (s) => (s === 'APPROVED' ? 'badge' : s === 'REJECTED' ? 'badge danger' : 'badge pending');
+
+const REPORT_TYPE_AR = { WEEKLY: 'أسبوعي', FINAL: 'نهائي', APPROVAL: 'إفادة', ABSENCE_WARNING: 'إنذار غياب', VISIT: 'تقرير زيارة' };
+const REPORT_STATUS_AR = { SUBMITTED: 'بانتظار المراجعة', APPROVED: 'معتمد', REJECTED: 'مرفوض', DRAFT: 'مسودة' };
 
 export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [currentUser, setCurrentUser] = useState({ name: '', entityType: '' });
-  const [loginForm, setLoginForm] = useState({ email: '', password: '', entityType: 'منشأة' });
+  const [token, setToken] = useState(() => {
+    consumeHashSession();
+    return getToken();
+  });
+  const [currentUser, setCurrentUser] = useState(() => {
+    const u = getSavedUser();
+    return { name: u?.name || '', entityType: ORG_TYPE_AR[u?.organization?.type] || '', orgName: u?.organization?.name || '' };
+  });
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
+
   const [activeTab, setActiveTab] = useState('home');
   const [menuOpen, setMenuOpen] = useState(false);
   const [oppFilter, setOppFilter] = useState('الكل');
   const [selectedOppId, setSelectedOppId] = useState(null);
+  const [applicants, setApplicants] = useState(null);
   const [showOppForm, setShowOppForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [oppForm, setOppForm] = useState(emptyOppForm);
   const [formError, setFormError] = useState('');
-  const [regForm, setRegForm] = useState({ name: '', major: '' });
+  const [saving, setSaving] = useState(false);
+  const [seatDrafts, setSeatDrafts] = useState({});
 
-  const [students, setStudents] = useState([
-    { id: 1, name: 'سارة أحمد', major: 'هندسة برمجيات', universityId: '441001234', phone: '0501234567', email: 'sara@student.edu', attendanceGrade: 30, tasksGrade: 50, finalGrade: 100, notes: 'ملتزمة جدا ومتميزة في المشاريع التقنية' },
-    { id: 2, name: 'ريم خالد', major: 'نظم معلومات إدارية', universityId: '441005678', phone: '0559876543', email: 'reem@student.edu', attendanceGrade: 25, tasksGrade: 40, finalGrade: 86, notes: 'تحتاج إلى متابعة في الحضور والالتزام' },
-    { id: 3, name: 'نورة العتيبي', major: 'علوم الحاسب', universityId: '441002345', phone: '0551112233', email: 'noura@student.edu', attendanceGrade: 28, tasksGrade: 45, finalGrade: 92, notes: 'مبادرة وتتعلم بسرعة' },
-    { id: 4, name: 'العنود السبيعي', major: 'علوم الحاسب', universityId: '441003456', phone: '0562223344', email: 'alanoud@student.edu', attendanceGrade: 27, tasksGrade: 42, finalGrade: 88, notes: 'أداء جيد وتحتاج لتطوير مهارات العرض' },
-    { id: 5, name: 'أسماء الغامدي', major: 'هندسة برمجيات', universityId: '441004567', phone: '0503334455', email: 'asma@student.edu', attendanceGrade: 30, tasksGrade: 47, finalGrade: 95, notes: 'ملتزمة بالدوام وتنجز المهام قبل موعدها' },
-    { id: 6, name: 'جود المالكي', major: 'علوم الحاسب', universityId: '441006789', phone: '0544445566', email: 'joud@student.edu', attendanceGrade: 22, tasksGrade: 38, finalGrade: 80, notes: 'تحتاج إلى متابعة في تسليم المهام' },
-    { id: 7, name: 'شهد العسيري', major: 'أمن سيبراني', universityId: '441007890', phone: '0535556677', email: 'shahad@student.edu', attendanceGrade: 26, tasksGrade: 41, finalGrade: 84, notes: 'مهتمة بالجانب التقني وتتفاعل مع الفريق' },
-    { id: 8, name: 'ريما الزهراني', major: 'نظم معلومات صحية', universityId: '441008901', phone: '0576667788', email: 'reema@student.edu', attendanceGrade: 29, tasksGrade: 44, finalGrade: 90, notes: 'منضبطة ومتعاونة مع زميلاتها' },
-  ]);
+  const [opportunities, setOpportunities] = useState([]);
+  const [summary, setSummary] = useState({ seatsAvailable: 0, totalSeats: 0, seatsTaken: 0 });
+  const [trainees, setTrainees] = useState([]);
+  const [avgEvaluation, setAvgEvaluation] = useState(null);
+  const [loadError, setLoadError] = useState('');
 
-  const [selectedStudent, setSelectedStudent] = useState(null);
-  const [reportData, setReportData] = useState({ studentId: '', reportType: '', details: '' });
+  const [reports, setReports] = useState([]);
+  const [reportData, setReportData] = useState({ assignmentId: '', reportType: '', title: '', details: '' });
+  const [reportMsg, setReportMsg] = useState('');
 
-  // كل الفرص (لكل فرصة نوع جهة: منشأة / تعليمية / حكومية)
-  const [allOpps, setAllOpps] = useState([
-    {
-      id: 1, entityType: 'تعليمية', icon: '🏫', title: 'تدريب تعاوني في التعليم العام', company: 'مدرسة ابتدائية آل مطاع والطفولة المبكرة...', type: 'تدريب تعاوني',
-      description: 'تدريب ميداني داخل المدرسة يشمل مساندة المعلمات والمشاركة في الأنشطة الصفية.',
-      startDate: '2026-11-01', endDate: '2027-02-08',
-      requirements: 'الالتزام بالدوام الرسمي، ومهارات تواصل جيدة، واجتياز 60 ساعة دراسية.',
-      deadline: '19/10/2026', location: 'القنفذة، العرضية الجنوبية، سبت شمران', duration: '3 أشهر و أسبوع', target: 'الكلية التطبيقية', status: 'متاح', seats: 4,
-      applicants: [
-        { name: 'سارة أحمد', major: 'هندسة برمجيات', status: 'مقبول' },
-        { name: 'ريم خالد', major: 'نظم معلومات إدارية', status: 'مقبول' },
-        { name: 'نورة العتيبي', major: 'علوم الحاسب', status: 'قيد المراجعة' },
-      ],
-    },
-    {
-      id: 2, entityType: 'منشأة', icon: '📡', title: 'تدريب صيفي إداري وإشراف', company: 'شركة الاتصالات السعودية (stc)', type: 'تدريب صيفي',
-      description: 'مساندة الفرق الإدارية في إعداد التقارير ومتابعة المشاريع.',
-      startDate: '2026-12-15', endDate: '2027-02-15',
-      requirements: 'إجادة برامج أوفيس واللغة الإنجليزية.',
-      deadline: '25/11/2026', location: 'أبها، المركز الرئيسي', duration: 'شهرين', target: 'الكلية التطبيقية', status: 'منتهي', seats: 3,
-      applicants: [
-        { name: 'لمى الشهراني', major: 'إدارة أعمال', status: 'مقبول' },
-        { name: 'هند القحطاني', major: 'نظم معلومات إدارية', status: 'مرفوض' },
-      ],
-    },
-    {
-      id: 3, entityType: 'منشأة', icon: '💻', title: 'تدريب تعاوني في تطوير الواجهات', company: 'شركة الحلول الرقمية الذكية', type: 'تدريب تعاوني',
-      description: 'تطوير واجهات ويب تفاعلية بالتعاون مع فريق التصميم والبرمجة.',
-      startDate: '2027-01-05', endDate: '2027-05-05',
-      requirements: 'معرفة بـ HTML و CSS و JavaScript، ومعرفة React ميزة إضافية.',
-      deadline: '30/11/2026', location: 'أبها، حي المنسك', duration: '4 أشهر', target: 'علوم الحاسب', status: 'متاح', seats: 5,
-      applicants: [
-        { name: 'العنود السبيعي', major: 'علوم الحاسب', status: 'قيد المراجعة' },
-        { name: 'أسماء الغامدي', major: 'هندسة برمجيات', status: 'قيد المراجعة' },
-        { name: 'جود المالكي', major: 'علوم الحاسب', status: 'مقبول' },
-        { name: 'شهد العسيري', major: 'أمن سيبراني', status: 'قيد المراجعة' },
-      ],
-    },
-    {
-      id: 4, entityType: 'حكومية', icon: '🏥', title: 'تدريب تعاوني في إدارة المعلومات الصحية', company: 'مستشفى أبها العام', type: 'تدريب تعاوني',
-      description: 'العمل على أنظمة السجلات الطبية الإلكترونية وتحليل بيانات المرضى.',
-      startDate: '2027-01-10', endDate: '2027-06-10',
-      requirements: 'معدل تراكمي لا يقل عن 3.5، والتعهد بسرية المعلومات.',
-      deadline: '10/12/2026', location: 'أبها، الخدمات الطبية', duration: '5 أشهر', target: 'نظم المعلومات', status: 'متاح', seats: 2,
-      applicants: [{ name: 'ريما الزهراني', major: 'نظم معلومات صحية', status: 'قيد المراجعة' }],
-    },
-    {
-      id: 5, entityType: 'حكومية', icon: '🏛️', title: 'تدريب تعاوني في التحول الرقمي', company: 'أمانة منطقة عسير وبلدياتها', type: 'تدريب تعاوني',
-      description: 'المشاركة في مشاريع الخدمات الرقمية للأمانة والبلديات.',
-      startDate: '2027-01-20', endDate: '2027-04-20',
-      requirements: 'تخصص تقني، ومهارات في التحليل وكتابة التقارير.',
-      deadline: '15/12/2026', location: 'أبها، مقر الأمانة', duration: '3 أشهر', target: 'علوم الحاسب', status: 'متاح', seats: 6,
-      applicants: [],
-    },
-    {
-      id: 6, entityType: 'تعليمية', icon: '📊', title: 'تدريب صيفي في تحليل البيانات', company: 'مركز الابتكار وريادة الأعمال', type: 'تدريب صيفي',
-      description: 'تحليل بيانات الأعمال وبناء لوحات مؤشرات الأداء.',
-      startDate: '2026-07-01', endDate: '2026-08-30',
-      requirements: 'معرفة بـ Excel وأساسيات الإحصاء.',
-      deadline: '01/10/2026', location: 'خميس مشيط', duration: 'شهرين', target: 'إدارة الأعمال', status: 'منتهي', seats: 2,
-      applicants: [
-        { name: 'غادة آل سالم', major: 'إدارة أعمال', status: 'مقبول' },
-        { name: 'رزان الدوسري', major: 'إدارة أعمال', status: 'مقبول' },
-      ],
-    },
-  ]);
+  const logout = useCallback(() => {
+    clearSession();
+    setToken(null);
+    setCurrentUser({ name: '', entityType: '', orgName: '' });
+  }, []);
 
-  // الفرص الظاهرة: فقط اللي تخص نوع الجهة المسجّلة
-  const opportunities = allOpps.filter((o) => o.entityType === currentUser.entityType);
+  // expired session anywhere -> login screen
+  useEffect(() => {
+    window.addEventListener('session-expired', logout);
+    return () => window.removeEventListener('session-expired', logout);
+  }, [logout]);
 
-  // ===== المقاعد: تحسب تلقائياً من المسجلين =====
-  const occupiedOf = (o) => o.applicants.filter((a) => a.status !== 'مرفوض').length;
-  const availableOf = (o) => Math.max((Number(o.seats) || 0) - occupiedOf(o), 0);
-  const totalSeats = opportunities.reduce((s, o) => s + (Number(o.seats) || 0), 0);
-  const totalOccupied = opportunities.reduce((s, o) => s + occupiedOf(o), 0);
-  const totalAvailable = opportunities.reduce((s, o) => s + availableOf(o), 0);
+  const loadAll = useCallback(async () => {
+    setLoadError('');
+    try {
+      const [opps, sum, rows, evals] = await Promise.all([
+        api.myOpportunities(), api.seatsSummary(), api.trainees(), api.evaluations(),
+      ]);
+      setOpportunities(opps.items.map(toUi));
+      setSummary(sum);
+      setTrainees(rows);
+      const scores = evals.items.map((e) => (e.totalScore / e.maxScore) * 100);
+      setAvgEvaluation(scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null);
+    } catch (err) {
+      setLoadError(errorAr(err));
+    }
+  }, []);
 
-  const updateOpp = (id, patch) =>
-    setAllOpps((list) => list.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+  const loadReports = useCallback(async () => {
+    try {
+      setReports((await api.reports()).items);
+    } catch (err) {
+      setReportMsg(errorAr(err));
+    }
+  }, []);
+
+  // after login: organization info + all data
+  useEffect(() => {
+    if (!token) return;
+    api.me()
+      .then((me) => {
+        const org = me.orgSupervisor?.organization;
+        setCurrentUser({ name: me.name, entityType: ORG_TYPE_AR[org?.type] || '', orgName: org?.name || '' });
+      })
+      .catch(() => {});
+    loadAll();
+  }, [token, loadAll]);
+
+  useEffect(() => {
+    if (token && activeTab === 'reports') loadReports();
+  }, [token, activeTab, loadReports]);
+
+  // applicants of the opened opportunity (sorted by GPA)
+  const loadApplicants = useCallback(async (oppId) => {
+    setApplicants(null);
+    try {
+      setApplicants((await api.applicants(oppId)).items);
+    } catch (err) {
+      alert(errorAr(err));
+      setApplicants([]);
+    }
+  }, []);
+  useEffect(() => {
+    if (selectedOppId) loadApplicants(selectedOppId);
+  }, [selectedOppId, loadApplicants]);
 
   const selectedOpp = opportunities.find((o) => o.id === selectedOppId);
+  const activeTrainees = trainees.filter((t) => t.assignment.status === 'ACTIVE');
 
-  // ===== حذف فرصة =====
-  const deleteOpp = (o) => {
-    const ok = window.confirm(`هل أنت متأكد من حذف الفرصة "${o.title}"؟\nسيتم حذف المتقدمين عليها أيضاً ولا يمكن التراجع.`);
-    if (!ok) return;
-    setAllOpps((list) => list.filter((x) => x.id !== o.id));
-    if (selectedOppId === o.id) setSelectedOppId(null);
+  // ===== تسجيل الدخول =====
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginError('');
+    setLoggingIn(true);
+    try {
+      const { token: t, user } = await api.login(loginForm.email.trim(), loginForm.password);
+      if (user.role !== 'ORG_SUPERVISOR') {
+        setLoginError('هذه البوابة مخصصة لجهات التدريب. استخدم البوابة الرئيسية للدخول إلى بوابتك.');
+        return;
+      }
+      saveSession(t, user);
+      setToken(t);
+    } catch (err) {
+      setLoginError(errorAr(err));
+    } finally {
+      setLoggingIn(false);
+    }
   };
 
-  const registerStudent = (o) => {
-    if (!regForm.name.trim()) { alert('الرجاء إدخال اسم الطالب'); return; }
-    if (o.status === 'منتهي') { alert('التقديم على هذه الفرصة منتهي'); return; }
-    if (availableOf(o) === 0) { alert('لا توجد مقاعد شاغرة'); return; }
-    updateOpp(o.id, {
-      applicants: [...o.applicants, { name: regForm.name.trim(), major: regForm.major.trim() || 'غير محدد', status: 'قيد المراجعة' }],
-    });
-    setRegForm({ name: '', major: '' });
-  };
-
-  const changeApplicantStatus = (o, idx, status) => {
-    const was = o.applicants[idx].status;
-    if (was === 'مرفوض' && status !== 'مرفوض' && availableOf(o) === 0) {
-      alert('لا توجد مقاعد شاغرة لإعادة قبول الطالب');
+  // ===== حذف فرصة (أو إغلاقها إذا تقدّم عليها طلاب) =====
+  const deleteOpp = async (o) => {
+    if (o.applicationsCount > 0) {
+      if (o.statusCode === 'CLOSED') {
+        alert('تقدّم طلاب على هذه الفرصة فلا يمكن حذفها، والتقديم عليها مغلق بالفعل.');
+        return;
+      }
+      if (window.confirm(`تقدّم طلاب على الفرصة "${o.title}" ولا يمكن حذفها.\nهل تريد إغلاق التقديم عليها بدلاً من ذلك؟`)) {
+        try {
+          await api.updateOpportunity(o.id, { status: 'CLOSED' });
+          await loadAll();
+        } catch (err) {
+          alert(errorAr(err));
+        }
+      }
       return;
     }
-    updateOpp(o.id, { applicants: o.applicants.map((a, i) => (i === idx ? { ...a, status } : a)) });
+    if (!window.confirm(`هل أنت متأكد من حذف الفرصة "${o.title}"؟\nلا يمكن التراجع.`)) return;
+    try {
+      await api.deleteOpportunity(o.id);
+      if (selectedOppId === o.id) setSelectedOppId(null);
+      await loadAll();
+    } catch (err) {
+      alert(errorAr(err));
+    }
+  };
+
+  // ===== قبول / رفض المرشحين =====
+  const decide = async (app, status) => {
+    const word = status === 'APPROVED' ? 'قبول' : 'رفض';
+    if (!window.confirm(`تأكيد ${word} الطالب ${app.student.user.name}؟ لا يمكن تغيير القرار بعد ذلك.`)) return;
+    try {
+      await api.decideApplication(app.id, status);
+      await Promise.all([loadApplicants(selectedOppId), loadAll()]);
+    } catch (err) {
+      alert(errorAr(err));
+    }
   };
 
   // ===== نشر / تعديل فرصة =====
   const openCreate = () => {
     setEditingId(null);
     setFormError('');
-    setOppForm({ ...emptyOppForm, company: currentUser.name });
+    setOppForm(emptyOppForm);
     setShowOppForm(true);
   };
   const openEdit = (o) => {
     setEditingId(o.id);
     setFormError('');
     setOppForm({
-      title: o.title, company: o.company, description: o.description || '', type: o.type, status: o.status,
-      startDate: o.startDate || '', endDate: o.endDate || '', deadline: o.deadline, seats: o.seats,
-      location: o.location, duration: o.duration, target: o.target, requirements: o.requirements || '',
+      title: o.title, description: o.description || '', type: o.typeCode, status: o.statusCode,
+      startDate: o.startDate, endDate: o.endDate, deadline: o.deadlineIso, seats: o.seats,
+      location: o.location === '—' ? '' : o.location, target: o.target === '—' ? '' : o.target,
+      requirements: o.requirements || '',
     });
     setShowOppForm(true);
   };
   const closeOppForm = () => { setShowOppForm(false); setFormError(''); };
   const f = (k) => (e) => setOppForm({ ...oppForm, [k]: e.target.value });
 
-  const saveOpp = (e) => {
+  const saveOpp = async (e) => {
     e.preventDefault();
 
-    // 1) كل البنود الإلزامية لازم تكون معبّاة
     const missing = Object.keys(REQUIRED_FIELDS).filter((k) => !String(oppForm[k]).trim());
     if (missing.length > 0) {
       setFormError('لا يمكن نشر الفرصة قبل تعبئة: ' + missing.map((k) => REQUIRED_FIELDS[k]).join('، '));
       return;
     }
-    // 2) المقاعد
     if (!(Number(oppForm.seats) > 0)) {
       setFormError('عدد المقاعد يجب أن يكون 1 أو أكثر');
       return;
     }
-    // 3) ترتيب التواريخ
-    if (oppForm.endDate < oppForm.startDate) {
+    if (oppForm.endDate <= oppForm.startDate) {
       setFormError('تاريخ نهاية التدريب يجب أن يكون بعد تاريخ البداية');
       return;
     }
-
-    const data = { ...oppForm, seats: Number(oppForm.seats) };
-    if (editingId) {
-      updateOpp(editingId, data);
-    } else {
-      const nextId = Math.max(0, ...allOpps.map((o) => o.id)) + 1;
-      // الفرصة الجديدة تأخذ نوع جهة الحساب المسجّل تلقائياً
-      setAllOpps([{ id: nextId, icon: '💼', applicants: [], entityType: currentUser.entityType, ...data }, ...allOpps]);
+    if (oppForm.deadline > oppForm.endDate) {
+      setFormError('آخر موعد للتقديم يجب أن يكون قبل نهاية التدريب');
+      return;
     }
-    closeOppForm();
+
+    const data = {
+      title: oppForm.title.trim(), description: oppForm.description.trim(), type: oppForm.type,
+      seats: Number(oppForm.seats), startDate: oppForm.startDate, endDate: oppForm.endDate, deadline: oppForm.deadline,
+      location: oppForm.location.trim(), target: oppForm.target.trim(), requirements: oppForm.requirements.trim(),
+    };
+    setSaving(true);
+    try {
+      if (editingId) await api.updateOpportunity(editingId, { ...data, status: oppForm.status });
+      else await api.createOpportunity(data);
+      closeOppForm();
+      await loadAll();
+    } catch (err) {
+      setFormError(errorAr(err));
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const avgGrade = students.length
-    ? Math.round(students.reduce((sum, s) => sum + Number(s.finalGrade || 0), 0) / students.length)
-    : 0;
+  // ===== تعديل عدد المقاعد من صفحة المقاعد =====
+  const saveSeats = async (o) => {
+    const value = seatDrafts[o.id];
+    if (value === undefined || Number(value) === o.seats) return;
+    try {
+      if (!(Number(value) > 0)) throw new Error('عدد المقاعد يجب أن يكون 1 أو أكثر');
+      await api.updateOpportunity(o.id, { seats: Number(value) });
+      await loadAll();
+    } catch (err) {
+      alert(errorAr(err));
+    } finally {
+      setSeatDrafts((d) => {
+        const rest = { ...d };
+        delete rest[o.id];
+        return rest;
+      });
+    }
+  };
+
+  // ===== التقارير =====
+  const sendReport = async (e) => {
+    e.preventDefault();
+    setReportMsg('');
+    const { assignmentId, reportType, title, details } = reportData;
+    if (!assignmentId || !reportType || !details.trim()) {
+      setReportMsg('اختر المتدرب ونوع التقرير واكتب التفاصيل.');
+      return;
+    }
+    const defaultTitle = { ABSENCE_WARNING: 'إنذار غياب', VISIT: 'تقرير زيارة', APPROVAL: 'إفادة جهة التدريب' }[reportType];
+    try {
+      await api.submitReport({
+        assignmentId: Number(assignmentId), type: reportType, title: title.trim() || defaultTitle, content: details.trim(),
+      });
+      setReportData({ assignmentId: '', reportType: '', title: '', details: '' });
+      setReportMsg('✅ تم إرسال التقرير، ووصل إشعار للمتدرب والمشرف الأكاديمي.');
+      await Promise.all([loadReports(), loadAll()]);
+    } catch (err) {
+      setReportMsg(errorAr(err));
+    }
+  };
+
+  const reviewReport = async (r, status) => {
+    try {
+      await api.reviewReport(r.id, status);
+      await loadReports();
+    } catch (err) {
+      alert(errorAr(err));
+    }
+  };
 
   const hour = new Date().getHours();
   const greet = hour < 12 ? 'صباح الخير' : hour < 18 ? 'طاب يومك' : 'مساء النور';
-
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    if (!loginForm.email || !loginForm.password) {
-      alert('الرجاء إدخال البريد وكلمة المرور');
-      return;
-    }
-    // وضع التجربة: الاسم من البريد ونوع الجهة من القائمة
-    if (DEMO_MODE) {
-      setCurrentUser({ name: loginForm.email.split('@')[0], entityType: loginForm.entityType });
-      setIsLoggedIn(true);
-      return;
-    }
-    // بعد الربط: الاسم ونوع الجهة يجيبهم السيرفر من حساب المنصة الرئيسية
-    try {
-      const res = await fetch(LOGIN_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: loginForm.email, password: loginForm.password }),
-      });
-      if (!res.ok) { alert('بيانات الدخول غير صحيحة'); return; }
-      const data = await res.json();
-      setCurrentUser({
-        name: data.name,
-        entityType: ENTITY_TYPES[data.entityType] || data.entityType,
-      });
-      setIsLoggedIn(true);
-    } catch {
-      alert('تعذر الاتصال بالخادم');
-    }
-  };
 
   const goTo = (key) => {
     setActiveTab(key);
@@ -280,51 +363,40 @@ export default function App() {
     </>
   );
 
-  // شاشة تسجيل الدخول
-  if (!isLoggedIn) {
+  // شاشة تسجيل الدخول (يمكن الدخول أيضاً من البوابة الرئيسية مباشرة)
+  if (!token) {
     return (
       <div className="portal-wrapper" dir="rtl">
         <GovBar />
         <div className="login-container">
           <div className="login-card">
             <h2>تسجيل الدخول - بوابة جهة التدريب</h2>
-            <p>منصة إدارة التدريب التعاوني: أدخل بيانات الحساب للوصول إلى لوحة التحكم</p>
+            <p>منصة إدارة التدريب التعاوني: أدخل بيانات حساب جهتك للوصول إلى لوحة التحكم</p>
             <form onSubmit={handleLogin} className="login-form">
               <div className="input-group">
                 <label>البريد الإلكتروني</label>
                 <input
-                  type="email"
-                  placeholder="name@company.com"
+                  type="email" dir="ltr" placeholder="name@company.com" required
                   value={loginForm.email}
                   onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
-                  required
                 />
               </div>
               <div className="input-group">
                 <label>كلمة المرور</label>
                 <input
-                  type="password"
-                  placeholder="********"
+                  type="password" dir="ltr" placeholder="********" required
                   value={loginForm.password}
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                  required
                 />
               </div>
-              {DEMO_MODE && (
-                <div className="input-group">
-                  <label>نوع الجهة (للتجربة فقط)</label>
-                  <select
-                    value={loginForm.entityType}
-                    onChange={(e) => setLoginForm({ ...loginForm, entityType: e.target.value })}
-                  >
-                    <option>منشأة</option>
-                    <option>تعليمية</option>
-                    <option>حكومية</option>
-                  </select>
-                </div>
-              )}
-              <button type="submit" className="login-submit-btn">تسجيل الدخول</button>
+              {loginError && <div className="form-error">{loginError}</div>}
+              <button type="submit" className="login-submit-btn" disabled={loggingIn}>
+                {loggingIn ? 'جاري الدخول...' : 'تسجيل الدخول'}
+              </button>
             </form>
+            <p className="muted" style={{ marginTop: 14 }}>
+              ليس لديك حساب؟ <a href={MAIN_PORTAL_URL}>سجّل جهتك من البوابة الرئيسية</a>
+            </p>
           </div>
         </div>
       </div>
@@ -333,10 +405,10 @@ export default function App() {
 
   const OppCard = ({ item }) => (
     <div className="card opp-card">
-      <div className={item.status === 'متاح' ? 'ribbon' : 'ribbon late'} />
+      <div className={item.statusCode === 'OPEN' ? 'ribbon' : 'ribbon late'} />
       <div className="card-head">
-        <span className={item.status === 'متاح' ? 'badge' : 'badge pending'}>
-          {item.status === 'متاح' ? 'التقديم متاح' : 'التقديم منتهي'}
+        <span className={item.statusCode === 'OPEN' ? 'badge' : 'badge pending'}>
+          {item.statusCode === 'OPEN' ? 'التقديم متاح' : 'التقديم منتهي'}
         </span>
         <div className="logo-circle">{item.icon}</div>
       </div>
@@ -345,25 +417,24 @@ export default function App() {
       <div className="tags">
         <span className="tag">ينتهي التقديم في {item.deadline}</span>
         <span className="tag">{item.type}</span>
-        <span className="tag">🪑 {availableOf(item)} / {item.seats} مقعد شاغر</span>
+        <span className="tag">🪑 {item.seatsAvailable} / {item.seats} مقعد شاغر</span>
+        <span className="tag">📨 {item.applicationsCount} طلب</span>
       </div>
       <ul className="meta">
         <li>📍 موقع التدريب : {item.location}</li>
         <li>⏳ مدة التدريب : {item.duration}</li>
-        {item.startDate && item.endDate && (
-          <li>🗓️ من {fmtDate(item.startDate)} إلى {fmtDate(item.endDate)}</li>
-        )}
+        <li>🗓️ من {dmy(item.startDate)} إلى {dmy(item.endDate)}</li>
         <li>👥 مخصص لطلاب {item.target}</li>
       </ul>
       <div className="card-actions">
         <button className="btn btn-primary" onClick={() => setSelectedOppId(item.id)}>
-          عرض التفاصيل
+          عرض التفاصيل والمتقدمين
         </button>
         <button className="btn btn-outline-sm" onClick={() => openEdit(item)}>
           تعديل الفرصة
         </button>
         <button className="btn btn-danger-sm" onClick={() => deleteOpp(item)}>
-          حذف الفرصة
+          {item.applicationsCount > 0 ? 'إغلاق / حذف' : 'حذف الفرصة'}
         </button>
       </div>
     </div>
@@ -372,18 +443,19 @@ export default function App() {
   const emptyOpps = (
     <div className="card">
       <p className="muted" style={{ margin: 0 }}>
-        لا توجد فرص مقدمة لجهات ({currentUser.entityType}) حالياً. يمكنك نشر فرصة جديدة.
+        لم تنشر جهتك أي فرصة تدريبية بعد. يمكنك نشر فرصة جديدة.
       </p>
     </div>
   );
 
-  const filteredOpps = opportunities.filter(
-    (o) => oppFilter === 'الكل' || o.status === oppFilter
-  );
-
-  const statusClass = (s) => (s === 'مقبول' ? 'badge' : s === 'مرفوض' ? 'badge danger' : 'badge pending');
+  const filteredOpps = opportunities.filter((o) => oppFilter === 'الكل' || o.status === oppFilter);
 
   const Req = () => <span className="req">*</span>;
+
+  const studentReports = reports.filter((r) => r.type === 'WEEKLY' || r.type === 'FINAL');
+  const sentReports = reports.filter((r) => !['WEEKLY', 'FINAL'].includes(r.type));
+  const traineeName = (assignmentId) =>
+    trainees.find((t) => t.assignment.id === assignmentId)?.assignment.student.user.name || `تكليف #${assignmentId}`;
 
   return (
     <div className="portal-wrapper" dir="rtl">
@@ -398,7 +470,7 @@ export default function App() {
         <div className="drawer-bg" onClick={() => setMenuOpen(false)}>
           <nav className="drawer" onClick={(e) => e.stopPropagation()}>
             <div className="drawer-head">
-              <strong>بوابة جهة التدريب</strong>
+              <strong>{currentUser.orgName || 'بوابة جهة التدريب'}</strong>
               <button className="menu-btn" onClick={() => setMenuOpen(false)}>✕</button>
             </div>
             {TABS.map((t) => (
@@ -410,10 +482,7 @@ export default function App() {
                 {t.label}
               </button>
             ))}
-            <button
-              className="logout-btn"
-              onClick={() => { setIsLoggedIn(false); setCurrentUser({ name: '', entityType: '' }); }}
-            >
+            <button className="logout-btn" onClick={() => { logout(); window.location.href = MAIN_PORTAL_URL; }}>
               خروج
             </button>
           </nav>
@@ -421,6 +490,12 @@ export default function App() {
       )}
 
       <main className="portal-content">
+        {loadError && (
+          <div className="form-error" style={{ marginBottom: 16 }}>
+            {loadError} <button className="btn btn-outline-sm" onClick={loadAll}>إعادة المحاولة</button>
+          </div>
+        )}
+
         {activeTab === 'home' && (
           <>
             <section className="hero">
@@ -446,9 +521,9 @@ export default function App() {
               <h2 className="section-title">مؤشرات جهتك</h2>
               <div className="stats">
                 <div><div className="stat-icon">💼</div><div className="stat-num">{opportunities.length}</div><div className="stat-label">فرصة مقدمة</div></div>
-                <div><div className="stat-icon">🎓</div><div className="stat-num">{students.length}</div><div className="stat-label">متدربة حالياً</div></div>
-                <div><div className="stat-icon">🪑</div><div className="stat-num">{totalAvailable}</div><div className="stat-label">مقعد شاغر</div></div>
-                <div><div className="stat-icon">⭐</div><div className="stat-num">{avgGrade}</div><div className="stat-label">متوسط التقييم</div></div>
+                <div><div className="stat-icon">🎓</div><div className="stat-num">{activeTrainees.length}</div><div className="stat-label">متدرب حالياً</div></div>
+                <div><div className="stat-icon">🪑</div><div className="stat-num">{summary.seatsAvailable}</div><div className="stat-label">مقعد شاغر</div></div>
+                <div><div className="stat-icon">⭐</div><div className="stat-num">{avgEvaluation ?? '—'}</div><div className="stat-label">متوسط التقييم (من 100)</div></div>
               </div>
             </section>
 
@@ -522,41 +597,42 @@ export default function App() {
             <div className="content-box">
               <h2 className="section-title">إدارة المقاعد التدريبية</h2>
               <div className="stats-grid">
-                <div className="stat-box"><span>إجمالي المقاعد</span><h3>{totalSeats} مقاعد</h3></div>
-                <div className="stat-box"><span>المقاعد المحجوزة</span><h3>{totalOccupied} مقعد</h3></div>
-                <div className="stat-box green"><span>المقاعد الشاغرة</span><h3>{totalAvailable} مقعد شاغر</h3></div>
+                <div className="stat-box"><span>إجمالي المقاعد</span><h3>{summary.totalSeats} مقاعد</h3></div>
+                <div className="stat-box"><span>المقاعد المحجوزة</span><h3>{summary.seatsTaken} مقعد</h3></div>
+                <div className="stat-box green"><span>المقاعد الشاغرة</span><h3>{summary.seatsAvailable} مقعد شاغر</h3></div>
               </div>
               <p className="muted" style={{ marginTop: 14 }}>
-                تتحدث المقاعد الشاغرة تلقائياً كلما سُجّل طالب على الفرصة.
+                يُحجز المقعد عند قبول جهتك للطالب. الأرقام تشمل الفرص المتاحة للتقديم فقط.
               </p>
             </div>
 
             {opportunities.map((o) => {
-              const occ = occupiedOf(o);
-              const fill = Number(o.seats) ? Math.min(Math.round((occ / Number(o.seats)) * 100), 100) : 0;
+              const fill = o.seats ? Math.min(Math.round((o.seatsTaken / o.seats) * 100), 100) : 0;
               return (
                 <div className="seat-card" key={o.id}>
                   <div className="seat-head">
                     <h4>{o.icon} {o.title}</h4>
-                    <span className={o.status === 'متاح' ? 'badge' : 'badge pending'}>{o.status}</span>
+                    <span className={o.statusCode === 'OPEN' ? 'badge' : 'badge pending'}>{o.status}</span>
                   </div>
                   <div className="seat-edit">
                     <label>عدد المقاعد</label>
                     <input
                       type="number"
-                      min="0"
-                      value={o.seats}
-                      onChange={(e) => updateOpp(o.id, { seats: e.target.value === '' ? '' : Math.max(Number(e.target.value), 0) })}
+                      min="1"
+                      value={seatDrafts[o.id] ?? o.seats}
+                      onChange={(e) => setSeatDrafts({ ...seatDrafts, [o.id]: e.target.value })}
+                      onBlur={() => saveSeats(o)}
+                      onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
                     />
                   </div>
                   <div className="seat-nums">
-                    <div><b>{o.applicants.length}</b><span>المسجلون</span></div>
-                    <div><b>{occ}</b><span>محجوزة</span></div>
-                    <div className="free"><b>{availableOf(o)}</b><span>شاغرة</span></div>
+                    <div><b>{o.applicationsCount}</b><span>المتقدمون</span></div>
+                    <div><b>{o.seatsTaken}</b><span>محجوزة</span></div>
+                    <div className="free"><b>{o.seatsAvailable}</b><span>شاغرة</span></div>
                   </div>
                   <div className="progress"><div style={{ width: `${fill}%` }} /></div>
                   <button className="btn btn-outline-sm" style={{ marginTop: 10 }} onClick={() => setSelectedOppId(o.id)}>
-                    إدارة المسجلين
+                    إدارة المتقدمين
                   </button>
                 </div>
               );
@@ -566,7 +642,7 @@ export default function App() {
 
         {activeTab === 'evaluation' && (
           <section className="section">
-            <EvaluationSection students={students} setStudents={setStudents} />
+            <EvaluationSection trainees={trainees} evaluatorName={currentUser.name} onSaved={loadAll} />
           </section>
         )}
 
@@ -586,41 +662,110 @@ export default function App() {
         {activeTab === 'reports' && (
           <section className="section">
             <div className="content-box">
-              <h2 className="section-title">نموذج الزيارة الميدانية وإرسال التقارير</h2>
-              <form
-                onSubmit={(e) => { e.preventDefault(); alert('تم إرسال التقرير بنجاح'); }}
-              >
-                <div className="form-group">
-                  <label>المتدربة</label>
-                  <select
-                    value={reportData.studentId}
-                    onChange={(e) => setReportData({ ...reportData, studentId: e.target.value })}
-                  >
-                    <option value="">اختر المتدربة...</option>
-                    {students.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>نوع التقرير</label>
-                  <select
-                    value={reportData.reportType}
-                    onChange={(e) => setReportData({ ...reportData, reportType: e.target.value })}
-                  >
-                    <option value="">اختر النوع...</option>
-                    <option value="warning">إنذار غياب</option>
-                    <option value="report">زيارة</option>
-                  </select>
-                </div>
-                <div className="form-group full">
-                  <label>التفاصيل</label>
-                  <textarea
-                    rows="3"
-                    value={reportData.details}
-                    onChange={(e) => setReportData({ ...reportData, details: e.target.value })}
-                  />
-                </div>
-                <button type="submit" className="submit-btn">إرسال التقرير</button>
-              </form>
+              <h2 className="section-title">إرسال تقرير زيارة أو إنذار غياب</h2>
+              {activeTrainees.length === 0 ? (
+                <p className="muted">لا يوجد متدربون حالياً في جهتك.</p>
+              ) : (
+                <form onSubmit={sendReport}>
+                  <div className="form-group">
+                    <label>المتدرب</label>
+                    <select
+                      value={reportData.assignmentId}
+                      onChange={(e) => setReportData({ ...reportData, assignmentId: e.target.value })}
+                    >
+                      <option value="">اختر المتدرب...</option>
+                      {activeTrainees.map((t) => (
+                        <option key={t.assignment.id} value={t.assignment.id}>
+                          {t.assignment.student.user.name} — {t.assignment.opportunity.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label>نوع التقرير</label>
+                    <select
+                      value={reportData.reportType}
+                      onChange={(e) => setReportData({ ...reportData, reportType: e.target.value })}
+                    >
+                      <option value="">اختر النوع...</option>
+                      <option value="ABSENCE_WARNING">إنذار غياب</option>
+                      <option value="VISIT">تقرير زيارة</option>
+                      <option value="APPROVAL">إفادة جهة التدريب</option>
+                    </select>
+                  </div>
+                  <div className="form-group full">
+                    <label>عنوان التقرير (اختياري)</label>
+                    <input
+                      value={reportData.title}
+                      onChange={(e) => setReportData({ ...reportData, title: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group full">
+                    <label>التفاصيل</label>
+                    <textarea
+                      rows="3"
+                      value={reportData.details}
+                      onChange={(e) => setReportData({ ...reportData, details: e.target.value })}
+                    />
+                  </div>
+                  {reportMsg && <p className={reportMsg.startsWith('✅') ? 'muted' : 'form-error'}>{reportMsg}</p>}
+                  <button type="submit" className="submit-btn">إرسال التقرير</button>
+                </form>
+              )}
+            </div>
+
+            <div className="content-box" style={{ marginTop: 20 }}>
+              <h2 className="section-title">تقارير المتدربين</h2>
+              {studentReports.length === 0 ? (
+                <p className="muted">لا توجد تقارير من المتدربين حتى الآن.</p>
+              ) : (
+                <table className="custom-table">
+                  <thead>
+                    <tr><th>المتدرب</th><th>النوع</th><th>العنوان</th><th>الحالة</th><th>الإجراءات</th></tr>
+                  </thead>
+                  <tbody>
+                    {studentReports.map((r) => (
+                      <tr key={r.id}>
+                        <td>{r.submittedBy?.name || traineeName(r.assignmentId)}</td>
+                        <td>{REPORT_TYPE_AR[r.type]}{r.weekNumber ? ` (أسبوع ${r.weekNumber})` : ''}</td>
+                        <td title={r.content}>{r.title}</td>
+                        <td>{REPORT_STATUS_AR[r.status]}</td>
+                        <td>
+                          {r.status === 'SUBMITTED' ? (
+                            <>
+                              <button className="action-btn save" onClick={() => reviewReport(r, 'APPROVED')}>اعتماد</button>
+                              <button className="action-btn alert" onClick={() => reviewReport(r, 'REJECTED')}>رفض</button>
+                            </>
+                          ) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="content-box" style={{ marginTop: 20 }}>
+              <h2 className="section-title">التقارير المرسلة من جهتك</h2>
+              {sentReports.length === 0 ? (
+                <p className="muted">لم ترسل جهتك أي تقرير بعد.</p>
+              ) : (
+                <table className="custom-table">
+                  <thead>
+                    <tr><th>المتدرب</th><th>النوع</th><th>العنوان</th><th>التاريخ</th></tr>
+                  </thead>
+                  <tbody>
+                    {sentReports.map((r) => (
+                      <tr key={r.id}>
+                        <td>{traineeName(r.assignmentId)}</td>
+                        <td>{REPORT_TYPE_AR[r.type]}</td>
+                        <td title={r.content}>{r.title}</td>
+                        <td>{dmy(r.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           </section>
         )}
@@ -634,15 +779,13 @@ export default function App() {
               <h3>{editingId ? 'تعديل الفرصة التدريبية' : 'نشر فرصة تدريبية جديدة'}</h3>
               <button className="modal-close" onClick={closeOppForm}>✕</button>
             </div>
-            <p className="muted" style={{ margin: '6px 0 0' }}>جميع البنود المعلّمة بـ (*) مطلوبة قبل النشر.</p>
+            <p className="muted" style={{ margin: '6px 0 0' }}>
+              جهة التدريب: <strong>{currentUser.orgName}</strong> — جميع البنود المعلّمة بـ (*) مطلوبة قبل النشر.
+            </p>
             <form onSubmit={saveOpp} noValidate className="report-form" style={{ marginTop: 14 }}>
               <div className="form-group full">
                 <label>عنوان الفرصة <Req /></label>
                 <input value={oppForm.title} onChange={f('title')} placeholder="مثال: تدريب تعاوني في تطوير الويب" />
-              </div>
-              <div className="form-group full">
-                <label>اسم الجهة <Req /></label>
-                <input value={oppForm.company} onChange={f('company')} placeholder="اسم الشركة أو المؤسسة" />
               </div>
               <div className="form-group full">
                 <label>وصف الفرصة <Req /></label>
@@ -651,17 +794,19 @@ export default function App() {
               <div className="form-group">
                 <label>نوع التدريب</label>
                 <select value={oppForm.type} onChange={f('type')}>
-                  <option>تدريب تعاوني</option>
-                  <option>تدريب صيفي</option>
+                  <option value="COOP">تدريب تعاوني</option>
+                  <option value="SUMMER">تدريب صيفي</option>
                 </select>
               </div>
-              <div className="form-group">
-                <label>حالة التقديم</label>
-                <select value={oppForm.status} onChange={f('status')}>
-                  <option value="متاح">متاح</option>
-                  <option value="منتهي">منتهي</option>
-                </select>
-              </div>
+              {editingId && (
+                <div className="form-group">
+                  <label>حالة التقديم</label>
+                  <select value={oppForm.status} onChange={f('status')}>
+                    <option value="OPEN">متاح</option>
+                    <option value="CLOSED">منتهي</option>
+                  </select>
+                </div>
+              )}
               <div className="form-group">
                 <label>تاريخ بداية التدريب <Req /></label>
                 <input type="date" value={oppForm.startDate} onChange={f('startDate')} />
@@ -672,7 +817,7 @@ export default function App() {
               </div>
               <div className="form-group">
                 <label>آخر موعد للتقديم <Req /></label>
-                <input value={oppForm.deadline} onChange={f('deadline')} placeholder="19/10/2026" />
+                <input type="date" value={oppForm.deadline} onChange={f('deadline')} />
               </div>
               <div className="form-group">
                 <label>عدد المقاعد <Req /></label>
@@ -683,8 +828,8 @@ export default function App() {
                 <input value={oppForm.location} onChange={f('location')} placeholder="المدينة، الحي" />
               </div>
               <div className="form-group">
-                <label>مدة التدريب <Req /></label>
-                <input value={oppForm.duration} onChange={f('duration')} placeholder="3 أشهر" />
+                <label>مدة التدريب</label>
+                <input value={durationOf(oppForm.startDate, oppForm.endDate) || 'تُحسب من التاريخين'} disabled />
               </div>
               <div className="form-group">
                 <label>الفئة المستهدفة <Req /></label>
@@ -698,8 +843,8 @@ export default function App() {
               {formError && <div className="form-error">{formError}</div>}
 
               <div className="form-group full">
-                <button type="submit" className="submit-btn">
-                  {editingId ? 'حفظ التعديلات' : 'نشر الفرصة'}
+                <button type="submit" className="submit-btn" disabled={saving}>
+                  {saving ? 'جاري الحفظ...' : editingId ? 'حفظ التعديلات' : 'نشر الفرصة'}
                 </button>
               </div>
             </form>
@@ -707,18 +852,16 @@ export default function App() {
         </div>
       )}
 
-      {/* نافذة تفاصيل الفرصة التدريبية */}
+      {/* نافذة تفاصيل الفرصة التدريبية والمتقدمين */}
       {selectedOpp && (() => {
-        const occ = occupiedOf(selectedOpp);
-        const avail = availableOf(selectedOpp);
-        const fill = Number(selectedOpp.seats) ? Math.min(Math.round((occ / Number(selectedOpp.seats)) * 100), 100) : 0;
+        const fill = selectedOpp.seats ? Math.min(Math.round((selectedOpp.seatsTaken / selectedOpp.seats) * 100), 100) : 0;
         return (
           <div className="modal-bg" onClick={() => setSelectedOppId(null)}>
             <div className="modal-box opp-modal" onClick={(e) => e.stopPropagation()}>
               <div className="modal-top">
                 <div>
-                  <span className={selectedOpp.status === 'متاح' ? 'badge' : 'badge pending'}>
-                    {selectedOpp.status === 'متاح' ? 'التقديم متاح' : 'التقديم منتهي'}
+                  <span className={selectedOpp.statusCode === 'OPEN' ? 'badge' : 'badge pending'}>
+                    {selectedOpp.statusCode === 'OPEN' ? 'التقديم متاح' : 'التقديم منتهي'}
                   </span>
                   <h3 style={{ marginTop: 10 }}>{selectedOpp.icon} {selectedOpp.title}</h3>
                   <div className="entity" style={{ marginBottom: 0 }}>{selectedOpp.company}</div>
@@ -728,12 +871,12 @@ export default function App() {
 
               <div className="detail-stats">
                 <div className="detail-stat"><b>{selectedOpp.seats}</b><span>إجمالي المقاعد</span></div>
-                <div className="detail-stat"><b>{selectedOpp.applicants.length}</b><span>الطلاب المسجلون</span></div>
-                <div className="detail-stat"><b>{avail}</b><span>مقاعد شاغرة</span></div>
+                <div className="detail-stat"><b>{selectedOpp.applicationsCount}</b><span>المتقدمون</span></div>
+                <div className="detail-stat"><b>{selectedOpp.seatsAvailable}</b><span>مقاعد شاغرة</span></div>
               </div>
 
               <div className="progress"><div style={{ width: `${fill}%` }} /></div>
-              <small className="muted">تم حجز {occ} من {selectedOpp.seats} مقعد ({fill}%)</small>
+              <small className="muted">تم حجز {selectedOpp.seatsTaken} من {selectedOpp.seats} مقعد ({fill}%)</small>
 
               {selectedOpp.description && (
                 <>
@@ -744,9 +887,7 @@ export default function App() {
 
               <ul className="meta detail-list">
                 <li>📌 {selectedOpp.type}</li>
-                {selectedOpp.startDate && selectedOpp.endDate && (
-                  <li>🗓️ فترة التدريب: من {fmtDate(selectedOpp.startDate)} إلى {fmtDate(selectedOpp.endDate)}</li>
-                )}
+                <li>🗓️ فترة التدريب: من {dmy(selectedOpp.startDate)} إلى {dmy(selectedOpp.endDate)}</li>
                 <li>📅 ينتهي التقديم في {selectedOpp.deadline}</li>
                 <li>📍 موقع التدريب : {selectedOpp.location}</li>
                 <li>⏳ مدة التدريب : {selectedOpp.duration}</li>
@@ -760,57 +901,44 @@ export default function App() {
                 </>
               )}
 
-              <h4 className="detail-title">الطلاب المسجلون ({selectedOpp.applicants.length})</h4>
-              {selectedOpp.applicants.length === 0 ? (
-                <p className="muted">لا يوجد طلاب مسجلون على هذه الفرصة حتى الآن.</p>
+              <h4 className="detail-title">الطلاب المتقدمون (مرتبون حسب المعدل)</h4>
+              <p className="muted" style={{ marginTop: 0 }}>
+                يتقدّم الطالب من بوابته، ثم يرشّحه المشرف الأكاديمي، وبعدها يظهر لك زرّا القبول والرفض.
+              </p>
+              {applicants === null ? (
+                <p className="muted">جاري التحميل...</p>
+              ) : applicants.length === 0 ? (
+                <p className="muted">لا يوجد طلاب متقدمون على هذه الفرصة حتى الآن.</p>
               ) : (
-                selectedOpp.applicants.map((a, i) => (
-                  <div className="applicant" key={i}>
+                applicants.map((a) => (
+                  <div className="applicant" key={a.id}>
                     <div>
-                      <strong>{a.name}</strong>
-                      <small>{a.major}</small>
+                      <strong>{a.student.user.name}</strong>
+                      <small>
+                        {a.student.major || 'تخصص غير محدد'} — الرقم الجامعي {a.student.universityId}
+                        {a.student.gpa != null && ` — المعدل ${a.student.gpa}`}
+                      </small>
                     </div>
-                    <select
-                      className={statusClass(a.status)}
-                      value={a.status}
-                      onChange={(e) => changeApplicantStatus(selectedOpp, i, e.target.value)}
-                    >
-                      <option>قيد المراجعة</option>
-                      <option>مقبول</option>
-                      <option>مرفوض</option>
-                    </select>
+                    {a.status === 'NOMINATED' ? (
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button className="action-btn save" onClick={() => decide(a, 'APPROVED')}>قبول</button>
+                        <button className="action-btn alert" onClick={() => decide(a, 'REJECTED')}>رفض</button>
+                      </div>
+                    ) : (
+                      <span className={statusClass(a.status)}>{APP_STATUS_AR[a.status]}</span>
+                    )}
                   </div>
                 ))
               )}
 
-              <h4 className="detail-title" style={{ marginTop: 16 }}>تسجيل طالب جديد</h4>
-              <div className="reg-form">
-                <input placeholder="اسم الطالب" value={regForm.name} onChange={(e) => setRegForm({ ...regForm, name: e.target.value })} />
-                <input placeholder="التخصص" value={regForm.major} onChange={(e) => setRegForm({ ...regForm, major: e.target.value })} />
-                <button className="btn btn-primary" onClick={() => registerStudent(selectedOpp)}>تسجيل الطالب</button>
-              </div>
-
-              <button className="btn-danger-block" onClick={() => deleteOpp(selectedOpp)}>حذف الفرصة</button>
+              <button className="btn-danger-block" onClick={() => deleteOpp(selectedOpp)}>
+                {selectedOpp.applicationsCount > 0 ? 'إغلاق التقديم على الفرصة' : 'حذف الفرصة'}
+              </button>
               <button className="submit-btn" style={{ marginTop: 10 }} onClick={() => setSelectedOppId(null)}>إغلاق</button>
             </div>
           </div>
         );
       })()}
-
-      {selectedStudent && (
-        <div className="modal-bg">
-          <div className="modal-box">
-            <h3>ملف المتدربة: {selectedStudent.name}</h3>
-            <p><strong>التخصص:</strong> {selectedStudent.major}</p>
-            <p><strong>الرقم الجامعي:</strong> {selectedStudent.universityId}</p>
-            <p><strong>البريد:</strong> {selectedStudent.email}</p>
-            <p><strong>الجوال:</strong> {selectedStudent.phone}</p>
-            <p><strong>التقييم الشامل:</strong> {selectedStudent.finalGrade} / 100</p>
-            <p><strong>ملاحظات:</strong> {selectedStudent.notes}</p>
-            <button className="submit-btn" onClick={() => setSelectedStudent(null)}>إغلاق</button>
-          </div>
-        </div>
-      )}
 
       <footer className="footer">© منصة التدريب التعاوني — بوابة جهة التدريب</footer>
     </div>

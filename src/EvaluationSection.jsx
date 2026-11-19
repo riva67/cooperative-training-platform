@@ -1,33 +1,46 @@
 import { useRef, useState, useEffect } from 'react';
+import { api, errorAr, dmy } from './api';
 
+// نموذج (2) تقييم المتدرب من جهة التدريب — `key` is what the backend expects (same order as the paper form)
 const CRITERIA = [
-  'الحضور والمواظبة في أوقات الدوام الرسمية',
-  'القدرة على التطبيق العملي للمعارف والمهارات',
-  'الطموح والرغبة في التعلم واكتساب خبرة جديدة',
-  'الرغبة في التعاون والمشاركة في العمل',
-  'حسن التعامل مع الزملاء والاهتمام بالمظهر والسلوك العام',
-  'مدى الالتزام بلوائح وانظمة المنشأة',
-  'مستوى الأداء والانتاجية',
-  'القدرة على استعمال أدوات العمل والمحافظة عليها',
+  { key: 'attendance', label: 'الحضور والمواظبة في أوقات الدوام الرسمية' },
+  { key: 'practical_application', label: 'القدرة على التطبيق العملي للمعارف والمهارات' },
+  { key: 'ambition', label: 'الطموح والرغبة في التعلم واكتساب خبرة جديدة' },
+  { key: 'cooperation', label: 'الرغبة في التعاون والمشاركة في العمل' },
+  { key: 'conduct', label: 'حسن التعامل مع الزملاء والاهتمام بالمظهر والسلوك العام' },
+  { key: 'regulations', label: 'مدى الالتزام بلوائح وانظمة المنشأة' },
+  { key: 'performance', label: 'مستوى الأداء والانتاجية' },
+  { key: 'tools', label: 'القدرة على استعمال أدوات العمل والمحافظة عليها' },
 ];
 const MAX_ITEM = 5;
 const MAX_TOTAL = CRITERIA.length * MAX_ITEM; // 40
+
+const SATISFACTION = ['غير راضٍ إطلاقاً', 'غير راضٍ', 'محايد', 'راضٍ', 'راضٍ جداً']; // 1..5
 
 const sum = (scores) => scores.reduce((a, s) => a + (Number(s) || 0), 0);
 const toPercent = (scores) => Math.round((sum(scores) / MAX_TOTAL) * 100);
 
 const emptyForm = () => ({
-  semester: '',
-  year: '',
-  company: '',
   scores: CRITERIA.map(() => ''),
   notes: CRITERIA.map(() => ''),
   wantHire: '',
   noReason: '',
-  supervisor: '',
   jobTitle: '',
-  date: '',
+  satisfaction: '',
   signature: '',
+});
+
+// saved evaluation from the backend -> the form's shape (read-only view)
+const fromBackend = (ev) => ({
+  scores: CRITERIA.map((c) => ev.scores[c.key]?.score ?? ''),
+  notes: CRITERIA.map((c) => ev.scores[c.key]?.notes ?? ''),
+  wantHire: ev.wantHire ?? (ev.wouldHire ? 'نعم' : 'لا'),
+  noReason: ev.noHireReason || '',
+  jobTitle: ev.evaluator?.jobTitle || '',
+  satisfaction: ev.satisfaction || '',
+  signature: ev.signature || '',
+  evaluatorName: ev.evaluator?.name,
+  date: dmy(ev.evaluatedAt),
 });
 
 const S = {
@@ -61,7 +74,7 @@ const S = {
 };
 
 /* ---------- التوقيع ---------- */
-function SignaturePad({ value, onChange }) {
+function SignaturePad({ value, onChange, readOnly }) {
   const ref = useRef(null);
   const drawing = useRef(false);
 
@@ -85,6 +98,7 @@ function SignaturePad({ value, onChange }) {
     };
   };
   const start = (e) => {
+    if (readOnly) return;
     drawing.current = true;
     const ctx = ref.current.getContext('2d');
     const { x, y } = pos(e);
@@ -105,7 +119,7 @@ function SignaturePad({ value, onChange }) {
   const end = () => {
     if (!drawing.current) return;
     drawing.current = false;
-    onChange(ref.current.toDataURL());
+    onChange(ref.current.toDataURL('image/png'));
   };
 
   return (
@@ -123,22 +137,26 @@ function SignaturePad({ value, onChange }) {
         onPointerUp={end}
         onPointerLeave={end}
       />
-      <div>
-        <button
-          type="button"
-          onClick={() => onChange('')}
-          style={{ background: 'none', border: 'none', color: '#6b7280', textDecoration: 'underline', cursor: 'pointer', fontSize: 13 }}
-        >
-          مسح التوقيع
-        </button>
-      </div>
+      {!readOnly && (
+        <div>
+          <button
+            type="button"
+            onClick={() => onChange('')}
+            style={{ background: 'none', border: 'none', color: '#6b7280', textDecoration: 'underline', cursor: 'pointer', fontSize: 13 }}
+          >
+            مسح التوقيع
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 /* ---------- نموذج التقييم ---------- */
-function EvaluationForm({ student, initial, onSave, onClose }) {
+function EvaluationForm({ trainee, evaluatorName, initial, readOnly, onSave, onClose }) {
   const [ev, setEv] = useState(initial || emptyForm());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
   const set = (k, v) => setEv((p) => ({ ...p, [k]: v }));
   const setArr = (k, i, v) =>
     setEv((p) => ({ ...p, [k]: p[k].map((x, j) => (j === i ? v : x)) }));
@@ -149,23 +167,37 @@ function EvaluationForm({ student, initial, onSave, onClose }) {
     setArr('scores', i, n);
   };
 
-  const field = (label, key, type = 'text') => (
+  const field = (label, key) => (
     <label style={S.fieldBox}>
       <span style={{ fontWeight: 'bold', fontSize: 14, whiteSpace: 'nowrap' }}>{label}</span>
-      <input type={type} value={ev[key]} onChange={(e) => set(key, e.target.value)} style={S.input} />
+      <input value={ev[key]} disabled={readOnly} onChange={(e) => set(key, e.target.value)} style={S.input} />
     </label>
   );
   const fixed = (label, value) => (
     <div style={{ ...S.fieldBox, background: '#f9fafb' }}>
       <span style={{ fontWeight: 'bold', fontSize: 14, whiteSpace: 'nowrap' }}>{label}</span>
-      <span style={{ fontSize: 14 }}>{value}</span>
+      <span style={{ fontSize: 14 }}>{value || '—'}</span>
     </div>
   );
 
   const canSave =
     ev.scores.every((s) => s !== '') &&
     ev.wantHire &&
-    (ev.wantHire === 'نعم' || ev.noReason.trim());
+    (ev.wantHire === 'نعم' || ev.noReason.trim()) &&
+    ev.satisfaction;
+
+  const a = trainee.assignment;
+
+  const submit = async () => {
+    setSaving(true);
+    setError('');
+    try {
+      await onSave(ev);
+    } catch (err) {
+      setError(errorAr(err));
+      setSaving(false);
+    }
+  };
 
   return (
     <div style={S.overlay}>
@@ -174,17 +206,18 @@ function EvaluationForm({ student, initial, onSave, onClose }) {
           <div>
             <div style={{ fontSize: 13, color: '#6b7280' }}>نموذج (٢)</div>
             <h2 style={{ margin: 0, fontSize: 20 }}>نموذج تقييم المتدرب من جهة التدريب</h2>
+            {readOnly && <div style={{ fontSize: 13, color: '#047857', marginTop: 4 }}>تم إرسال هذا التقييم (للعرض فقط)</div>}
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 26, cursor: 'pointer', color: '#6b7280' }}>×</button>
         </div>
 
         <div style={S.grid}>
-          {field('الفصل الدراسي:', 'semester')}
-          {field('العام الجامعي:', 'year')}
-          {field('جهة التدريب:', 'company')}
-          {fixed('المتدرب:', student.name)}
-          {fixed('الرقم الجامعي:', student.universityId)}
-          {fixed('التخصص:', student.major)}
+          {fixed('الفصل الدراسي:', a.semester)}
+          {fixed('العام الجامعي:', a.academicYear)}
+          {fixed('جهة التدريب:', a.opportunity.organization.name)}
+          {fixed('المتدرب:', a.student.user.name)}
+          {fixed('الرقم الجامعي:', a.student.universityId)}
+          {fixed('التخصص:', a.student.major)}
         </div>
 
         <div style={{ overflowX: 'auto' }}>
@@ -199,13 +232,14 @@ function EvaluationForm({ student, initial, onSave, onClose }) {
             </thead>
             <tbody>
               {CRITERIA.map((c, i) => (
-                <tr key={c}>
-                  <td style={S.td}>{c}</td>
+                <tr key={c.key}>
+                  <td style={S.td}>{c.label}</td>
                   <td style={{ ...S.td, textAlign: 'center' }}>{MAX_ITEM}</td>
                   <td style={S.td}>
                     <input
                       type="number" min="0" max={MAX_ITEM}
                       value={ev.scores[i]}
+                      disabled={readOnly}
                       onChange={(e) => setScore(i, e.target.value)}
                       style={{ ...S.input, width: '100%', textAlign: 'center' }}
                     />
@@ -213,6 +247,7 @@ function EvaluationForm({ student, initial, onSave, onClose }) {
                   <td style={S.td}>
                     <input
                       value={ev.notes[i]}
+                      disabled={readOnly}
                       onChange={(e) => setArr('notes', i, e.target.value)}
                       style={{ ...S.input, width: '100%' }}
                     />
@@ -239,6 +274,7 @@ function EvaluationForm({ student, initial, onSave, onClose }) {
                 <input
                   type="radio" name="wantHire"
                   checked={ev.wantHire === opt}
+                  disabled={readOnly}
                   onChange={() => set('wantHire', opt)}
                 />
                 {opt}
@@ -254,37 +290,65 @@ function EvaluationForm({ student, initial, onSave, onClose }) {
               <textarea
                 rows={3}
                 value={ev.noReason}
+                disabled={readOnly}
                 onChange={(e) => set('noReason', e.target.value)}
                 style={{ width: '100%', boxSizing: 'border-box', border: '1px solid #d1d5db', borderRadius: 6, padding: 8, fontFamily: 'inherit' }}
               />
             </div>
           )}
 
+          {/* مؤشر "رضا جهات التدريب" */}
+          <div style={{ fontWeight: 'bold', color: '#92400e', margin: '8px 0' }}>
+            ما مدى رضا جهتكم عن برنامج التدريب التعاوني؟
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, marginBottom: 16 }}>
+            {SATISFACTION.map((label, i) => (
+              <label key={label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="radio" name="satisfaction"
+                  checked={Number(ev.satisfaction) === i + 1}
+                  disabled={readOnly}
+                  onChange={() => set('satisfaction', i + 1)}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+
           <div style={S.grid}>
-            {field('المشرف على التدريب:', 'supervisor')}
+            {fixed('المشرف على التدريب:', ev.evaluatorName || evaluatorName)}
             {field('المسمى الوظيفي:', 'jobTitle')}
-            {field('التاريخ:', 'date', 'date')}
+            {fixed('التاريخ:', ev.date || dmy(new Date()))}
           </div>
 
           <div style={{ fontWeight: 'bold', fontSize: 14, marginBottom: 4 }}>التوقيع:</div>
-          <SignaturePad value={ev.signature} onChange={(v) => set('signature', v)} />
+          <SignaturePad value={ev.signature} readOnly={readOnly} onChange={(v) => set('signature', v)} />
         </div>
 
+        {error && <p style={{ color: '#b91c1c', marginTop: 12 }}>{error}</p>}
+
         <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
-          <button
-            disabled={!canSave}
-            onClick={() => onSave(ev)}
-            style={{ ...S.btn, background: '#047857', color: '#fff', opacity: canSave ? 1 : 0.4 }}
-          >
-            حفظ التقييم
-          </button>
+          {!readOnly && (
+            <button
+              disabled={!canSave || saving}
+              onClick={submit}
+              style={{ ...S.btn, background: '#047857', color: '#fff', opacity: canSave && !saving ? 1 : 0.4 }}
+            >
+              {saving ? 'جاري الإرسال...' : 'إرسال التقييم'}
+            </button>
+          )}
           <button onClick={onClose} style={{ ...S.btn, background: '#fff', border: '1px solid #d1d5db' }}>
-            إلغاء
+            {readOnly ? 'إغلاق' : 'إلغاء'}
           </button>
         </div>
-        {!canSave && (
+        {!readOnly && !canSave && (
           <p style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
-            للحفظ: عبّي كل الدرجات، وحدد خيار التوظيف (وإذا كانت الإجابة لا اذكر السبب).
+            للإرسال: عبّي كل الدرجات، وحدد خيار التوظيف (وإذا كانت الإجابة لا اذكر السبب)، وحدد مدى الرضا.
+          </p>
+        )}
+        {!readOnly && (
+          <p style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+            يُرسل التقييم مرة واحدة لكل متدرب ولا يمكن تعديله بعد الإرسال، ويصل للمشرف الأكاديمي (لا يراه الطالب).
           </p>
         )}
       </div>
@@ -292,65 +356,90 @@ function EvaluationForm({ student, initial, onSave, onClose }) {
   );
 }
 
-/* ---------- الجدول (نفس تصميمك القديم) ---------- */
-export default function EvaluationSection({ students, setStudents }) {
-  const [forms, setForms] = useState({}); // التقييمات المحفوظة لكل متدربة
-  const [open, setOpen] = useState(null); // المتدربة المفتوح نموذجها
+/* ---------- جدول المتدربين ---------- */
+export default function EvaluationSection({ trainees, evaluatorName, onSaved }) {
+  const [open, setOpen] = useState(null); // { trainee, initial, readOnly }
 
-  const updateGrade = (id, value) =>
-    setStudents(students.map((s) => (s.id === id ? { ...s, finalGrade: Number(value) } : s)));
-
-  const save = (student, ev) => {
-    setForms({ ...forms, [student.id]: ev });
-    updateGrade(student.id, toPercent(ev.scores));
-    setOpen(null);
-    alert('تم حفظ التقييم');
+  const openForm = async (t) => {
+    if (!t.hasEvaluation) {
+      setOpen({ trainee: t, initial: null, readOnly: false });
+      return;
+    }
+    try {
+      const ev = await api.evaluation(t.assignment.id);
+      setOpen({ trainee: t, initial: fromBackend(ev), readOnly: true });
+    } catch (err) {
+      alert(errorAr(err));
+    }
   };
+
+  const save = async (t, ev) => {
+    await api.submitEvaluation({
+      assignmentId: t.assignment.id,
+      scores: Object.fromEntries(
+        CRITERIA.map((c, i) => [c.key, { score: Number(ev.scores[i]), ...(ev.notes[i].trim() && { notes: ev.notes[i].trim() }) }])
+      ),
+      wouldHire: ev.wantHire === 'نعم',
+      ...(ev.wantHire === 'لا' && { noHireReason: ev.noReason.trim() }),
+      satisfaction: Number(ev.satisfaction),
+      ...(ev.jobTitle.trim() && { evaluatorTitle: ev.jobTitle.trim() }),
+      ...(ev.signature && { signature: ev.signature }),
+    });
+    setOpen(null);
+    alert('تم إرسال التقييم بنجاح');
+    onSaved?.();
+  };
+
+  const evaluable = trainees.filter((t) => t.assignment.status !== 'CANCELLED');
 
   return (
     <div className="content-box">
-      <h2>بنود التقييم واكمال الدرجات (من 100 درجة)</h2>
-      <table className="custom-table">
-        <thead>
-          <tr>
-            <th>(اضغط للعرض) اسم المتدربة</th>
-            <th>التخصص</th>
-            <th>التقييم الشامل (من 100)</th>
-            <th>الإجراءات</th>
-          </tr>
-        </thead>
-        <tbody>
-          {students.map((student) => (
-            <tr key={student.id}>
-              <td>
-                <button className="student-link" onClick={() => setOpen(student)}>
-                  {student.name} 🔍
-                </button>
-              </td>
-              <td>{student.major}</td>
-              <td>
-                <input
-                  type="number"
-                  className="small-input"
-                  value={student.finalGrade}
-                  onChange={(e) => updateGrade(student.id, e.target.value)}
-                />
-              </td>
-              <td>
-                <button className="action-btn save" onClick={() => alert('تم الحفظ بنجاح')}>حفظ</button>
-                <button className="action-btn alert" onClick={() => alert('تم إرسال تنبيه')}>شكوى</button>
-              </td>
+      <h2>تقييم المتدربين — نموذج (٢)</h2>
+      {evaluable.length === 0 ? (
+        <p className="muted">لا يوجد متدربون في جهتك حالياً.</p>
+      ) : (
+        <table className="custom-table">
+          <thead>
+            <tr>
+              <th>(اضغط للعرض) اسم المتدرب</th>
+              <th>التخصص</th>
+              <th>نسبة الحضور</th>
+              <th>التقييم</th>
+              <th>الدرجة النهائية (من الجامعة)</th>
+              <th>الإجراءات</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {evaluable.map((t) => (
+              <tr key={t.assignment.id}>
+                <td>
+                  <button className="student-link" onClick={() => openForm(t)}>
+                    {t.assignment.student.user.name} 🔍
+                  </button>
+                </td>
+                <td>{t.assignment.student.major || '—'}</td>
+                <td>{t.attendanceRate == null ? '—' : `${t.attendanceRate}%`}</td>
+                <td>{t.hasEvaluation ? '✅ تم التقييم' : 'لم يُقيَّم بعد'}</td>
+                <td>{t.finalGrade == null ? '—' : `${t.finalGrade} / 100`}</td>
+                <td>
+                  <button className="action-btn save" onClick={() => openForm(t)}>
+                    {t.hasEvaluation ? 'عرض التقييم' : 'تعبئة النموذج'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       {open && (
         <EvaluationForm
-          key={open.id}
-          student={open}
-          initial={forms[open.id]}
-          onSave={(ev) => save(open, ev)}
+          key={open.trainee.assignment.id}
+          trainee={open.trainee}
+          evaluatorName={evaluatorName}
+          initial={open.initial}
+          readOnly={open.readOnly}
+          onSave={(ev) => save(open.trainee, ev)}
           onClose={() => setOpen(null)}
         />
       )}

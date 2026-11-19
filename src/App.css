@@ -218,3 +218,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--green-borde
 .btn-danger-sm:hover { background: #fee2e2; }
 .btn-danger-block { width: 100%; margin-top: 16px; background: #fff; border: 1px solid #b91c1c; color: #b91c1c; border-radius: 8px; padding: 12px; font: inherit; font-weight: 500; cursor: pointer; }
 .btn-danger-block:hover { background: #fee2e2; }
+/* ===== added when connecting the portal to the backend ===== */
+.form-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.req { color: #dc2626; margin-inline-start: 2px; }
+.desc-text { margin: 4px 0 12px; line-height: 1.8; color: #374151; white-space: pre-line; }
+.login-form { display: flex; flex-direction: column; gap: 14px; }
+.action-btn:disabled, .submit-btn:disabled, .login-submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }

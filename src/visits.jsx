@@ -1,87 +1,118 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { api, errorAr } from './api';
+
+// The academic supervisor books a field visit from their portal; the training provider approves or declines here.
+const STATUS = {
+  PENDING: { label: 'بانتظار ردك', cls: 'badge pending' },
+  APPROVED: { label: 'تمت الموافقة', cls: 'badge' },
+  DECLINED: { label: 'تم الاعتذار', cls: 'badge danger' },
+  CANCELLED: { label: 'ألغاها المشرف', cls: 'badge danger' },
+};
+
+const when = (d) =>
+  new Intl.DateTimeFormat('ar-SA-u-ca-gregory', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Asia/Riyadh' }).format(new Date(d));
 
 export default function Visits() {
-  const [visitDate, setVisitDate] = useState('');
-  const [visitTime, setVisitTime] = useState('');
-  const [companyName, setCompanyName] = useState('');
-  const [supervisorName, setSupervisorName] = useState('');
-  const [showAlert, setShowAlert] = useState(false);
+  const [visits, setVisits] = useState(null);
+  const [error, setError] = useState('');
+  const [replies, setReplies] = useState({}); // optional reply text per visit
+  const [busy, setBusy] = useState(null);
 
-  const handleScheduleVisit = (e) => {
-    e.preventDefault();
-    // إظهار رسالة النجاح والترحيب
-    setShowAlert(true);
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      setVisits((await api.visits()).items);
+    } catch (err) {
+      setError(errorAr(err));
+      setVisits([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const respond = async (v, decision) => {
+    setBusy(v.id);
+    try {
+      await api.respondVisit(v.id, decision, replies[v.id]);
+      await load();
+    } catch (err) {
+      alert(errorAr(err));
+    } finally {
+      setBusy(null);
+    }
   };
 
+  const now = new Date();
+  const pending = (visits || []).filter((v) => v.status === 'PENDING' && new Date(v.scheduledAt) > now);
+  const others = (visits || []).filter((v) => !pending.includes(v));
+
   return (
-    <div className="max-w-2xl mx-auto p-6 bg-white shadow-md rounded-lg mt-8" dir="rtl">
-      <h2 className="text-2xl font-bold text-gray-800 mb-2 text-center">نموذج زيارات المشرف الأكاديمي</h2>
-      <p className="text-gray-600 text-center mb-6">جدولة زيارات جهات التدريب وتوثيقها</p>
+    <div className="content-box" style={{ marginTop: 16 }}>
+      <h2 className="section-title">زيارات المشرف الأكاديمي</h2>
+      <p className="muted">يحجز المشرف الأكاديمي موعد الزيارة من بوابته، ويصلك الطلب هنا للموافقة أو الاعتذار.</p>
+      {error && <p className="form-error">{error}</p>}
+      {visits === null && <p className="muted">جاري التحميل...</p>}
 
-      {/* رسالة الترحيب والإشعار عند النجاح */}
-      {showAlert && (
-        <div className="mb-6 p-4 bg-green-100 border border-green-400 text-green-700 rounded-lg text-center animate-bounce">
-          <p className="font-bold text-lg">🎉 أهلاً بك وسهلاً في جهة التدريب!</p>
-          <p className="text-sm mt-1">تم إرسال إشعار تأكيد الزيارة بنجاح للمشرف الأكاديمي وتم جدولة الموعد.</p>
+      {visits && visits.length === 0 && <p className="muted">لا توجد طلبات زيارة حتى الآن.</p>}
+
+      {pending.length > 0 && <h4 className="detail-title">طلبات بانتظار ردك ({pending.length})</h4>}
+      {pending.map((v) => (
+        <div className="seat-card" key={v.id}>
+          <div className="seat-head">
+            <h4>🗓️ {when(v.scheduledAt)}</h4>
+            <span className={STATUS[v.status].cls}>{STATUS[v.status].label}</span>
+          </div>
+          <p style={{ margin: '6px 0' }}>
+            <strong>المشرف الأكاديمي:</strong> {v.academicSupervisor.user.name}
+            {v.academicSupervisor.user.phone && <> — 📞 <span dir="ltr">{v.academicSupervisor.user.phone}</span></>}
+          </p>
+          <p className="desc-text">{v.requestMessage}</p>
+          <div className="form-group full">
+            <label>ردّك (اختياري — يُرسل رد مهذب تلقائياً إذا تركته فارغاً)</label>
+            <textarea
+              rows="2"
+              value={replies[v.id] || ''}
+              onChange={(e) => setReplies({ ...replies, [v.id]: e.target.value })}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="action-btn save" disabled={busy === v.id} onClick={() => respond(v, 'APPROVE')}>
+              موافقة على الموعد
+            </button>
+            <button className="action-btn alert" disabled={busy === v.id} onClick={() => respond(v, 'DECLINE')}>
+              اعتذار
+            </button>
+          </div>
         </div>
+      ))}
+
+      {others.length > 0 && (
+        <>
+          <h4 className="detail-title" style={{ marginTop: 20 }}>سجل الزيارات</h4>
+          <table className="custom-table">
+            <thead>
+              <tr><th>الموعد</th><th>المشرف الأكاديمي</th><th>الحالة</th><th>تمت الزيارة</th><th>ملاحظات المشرف</th></tr>
+            </thead>
+            <tbody>
+              {others.map((v) => (
+                <tr key={v.id}>
+                  <td>{when(v.scheduledAt)}</td>
+                  <td>{v.academicSupervisor.user.name}</td>
+                  <td>
+                    <span className={(STATUS[v.status] || STATUS.PENDING).cls}>
+                      {v.status === 'PENDING' ? 'انتهى الموعد دون رد' : STATUS[v.status].label}
+                    </span>
+                  </td>
+                  <td>{v.isDone ? '✅' : '—'}</td>
+                  <td>{v.notes || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
-
-      <form onSubmit={handleScheduleVisit}>
-        <div className="mb-4">
-          <label className="block text-gray-700 font-bold mb-2">اسم جهة التدريب:</label>
-          <input
-            type="text"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
-            placeholder="مثال: شركة الاتصالات السعودية"
-            required
-          />
-        </div>
-
-        <div className="mb-4">
-          <label className="block text-gray-700 font-bold mb-2">اسم المشرف الأكاديمي:</label>
-          <input
-            type="text"
-            className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            value={supervisorName}
-            onChange={(e) => setSupervisorName(e.target.value)}
-            placeholder="د. محمد العمري"
-            required
-          />
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="block text-gray-700 font-bold mb-2">تاريخ الزيارة:</label>
-            <input
-              type="date"
-              className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={visitDate}
-              onChange={(e) => setVisitDate(e.target.value)}
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-gray-700 font-bold mb-2">وقت الزيارة:</label>
-            <input
-              type="time"
-              className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              value={visitTime}
-              onChange={(e) => setVisitTime(e.target.value)}
-              required
-            />
-          </div>
-        </div>
-
-        <button
-          type="submit"
-          className="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition duration-300 mt-4"
-        >
-          حجدولة الزيارة وإرسال الإشعار
-        </button>
-      </form>
     </div>
   );
 }
