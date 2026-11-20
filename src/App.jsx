@@ -1,15 +1,188 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
+import Login from './Login';
+import { api, getSavedUser, clearSession, consumeHashSession } from './api';
 import { 
   Clock, CheckCircle2, FileText, Building2, Calendar, 
   AlertCircle, Upload, Image as ImageIcon, Plus, Trash2,
-  LogIn, LogOut, CheckSquare, Send, X, MapPin, AlertTriangle, FileCheck, Eye
+  LogIn, LogOut, CheckSquare, Send, X, MapPin, AlertTriangle, FileCheck, Eye,
+  Briefcase, Printer
 } from 'lucide-react';
 
+const TOTAL_TRAINING_HOURS = 280; // إجمالي ساعات التدريب المطلوبة
+const REQUIRED_DAILY_HOURS = 6;   // الحد الأدنى لساعات العمل اليومية
+const daysArabic = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+
+const ATTENDANCE_STATUS_AR = { PRESENT: 'حاضر', LATE: 'متأخر', ABSENT: 'غائب', EXCUSED: 'غائب بعذر' };
+const REPORT_STATUS_AR = { DRAFT: 'مسودة', SUBMITTED: 'قيد المراجعة', APPROVED: 'مقبول', REJECTED: 'مرفوض' };
+const REPORT_NOTE_AR = {
+  DRAFT: 'لم يتم تسليم التقرير بعد.',
+  SUBMITTED: 'تم التسليم وفي انتظار مراجعة المشرف.',
+  APPROVED: 'تم اعتماد التقرير من المشرف.',
+  REJECTED: 'تم رفض التقرير، يرجى مراجعة المشرف وإعادة التسليم.',
+};
+const APPLICATION_STATUS = {
+  PENDING: { label: 'قيد المراجعة', cls: 'bg-amber-50 text-amber-600' },
+  NOMINATED: { label: 'مرشّح من الجامعة', cls: 'bg-blue-50 text-blue-600' },
+  APPROVED: { label: 'مقبول', cls: 'bg-emerald-50 text-emerald-600' },
+  REJECTED: { label: 'مرفوض', cls: 'bg-rose-50 text-rose-600' },
+};
+
+const formatTime = (iso) =>
+  new Date(iso).toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' });
+
+function timeAgo(iso) {
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return 'الآن';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `منذ ${minutes} دقيقة`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `منذ ${hours} ساعة`;
+  return `منذ ${Math.floor(hours / 24)} يوم`;
+}
+
+// Opens the related tab when a notification is clicked (the backend sends its messages in English)
+function tabForNotification(message) {
+  const m = message.toLowerCase();
+  if (m.includes('report')) return 'reports';
+  if (m.includes('attendance')) return 'attendance';
+  if (m.includes('application') || m.includes('nominated') || m.includes('opportunit')) return 'opportunities';
+  return null;
+}
+
+// Working days (Sunday-Thursday) from the start of the training until yesterday with NO attendance record
+function missingWorkdays(startIso, endIso, recordDates, todayStr, maxDays = 14) {
+  const out = [];
+  const start = new Date(`${startIso.slice(0, 10)}T00:00:00Z`);
+  const end = new Date(`${endIso.slice(0, 10)}T00:00:00Z`);
+  const yesterday = new Date(`${todayStr}T00:00:00Z`);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const last = yesterday < end ? yesterday : end;
+  for (let d = new Date(last); d >= start && out.length < maxDays; d.setUTCDate(d.getUTCDate() - 1)) {
+    const dow = d.getUTCDay();
+    if (dow === 5 || dow === 6) continue; // Friday / Saturday
+    const ds = d.toISOString().slice(0, 10);
+    if (!recordDates.has(ds)) out.push(ds);
+  }
+  return out;
+}
+
 export default function App() {
+  const [user, setUser] = useState(() => {
+    consumeHashSession(); // signed in from the main portal?
+    return getSavedUser();
+  });
+
+  // the token expired or was rejected -> back to the login screen
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener('auth-expired', onExpired);
+    return () => window.removeEventListener('auth-expired', onExpired);
+  }, []);
+
+  const handleLogout = () => {
+    clearSession();
+    setUser(null);
+  };
+
+  if (!user) return <Login onLogin={setUser} />;
+  return <Portal key={user.id} user={user} onLogout={handleLogout} />;
+}
+
+function Portal({ user, onLogout }) {
   const [activeTab, setActiveTab] = useState('dashboard');
 
-  // --- 1. حالة توثيق الأنشطة والصور الفعلية ---
+  // ================= البيانات القادمة من الـ backend =================
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [assignment, setAssignment] = useState(null);
+  const [attendanceItems, setAttendanceItems] = useState([]);
+  const [reportsRaw, setReportsRaw] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [opportunities, setOpportunities] = useState([]);
+  const [applications, setApplications] = useState([]);
+  const [letter, setLetter] = useState(null);
+
+  const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+
+  const refreshAttendance = useCallback(async (assignmentId) => {
+    const { items } = await api.attendance(assignmentId);
+    setAttendanceItems(items);
+  }, []);
+  const refreshReports = useCallback(async () => {
+    const { items } = await api.reports();
+    setReportsRaw(items);
+  }, []);
+  const refreshNotifications = useCallback(async () => {
+    const data = await api.notifications();
+    setNotifications(data.items);
+    setUnreadCount(data.unreadCount);
+  }, []);
+  const refreshApplications = useCallback(async () => {
+    const { items } = await api.myApplications();
+    setApplications(items);
+  }, []);
+
+  const loadAll = useCallback(async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      const [assignmentsRes, oppRes] = await Promise.all([api.assignments(), api.openOpportunities()]);
+      const current = assignmentsRes.items.find((a) => a.status === 'ACTIVE') || assignmentsRes.items[0] || null;
+      setAssignment(current);
+      setOpportunities(oppRes.items);
+      await Promise.all([
+        refreshReports(),
+        refreshNotifications(),
+        refreshApplications(),
+        current ? refreshAttendance(current.id) : Promise.resolve(),
+      ]);
+    } catch (err) {
+      setLoadError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [refreshReports, refreshNotifications, refreshApplications, refreshAttendance]);
+
+  useEffect(() => {
+    loadAll();
+  }, [loadAll]);
+
+  // new notifications appear automatically (checked every minute)
+  useEffect(() => {
+    const timer = setInterval(() => refreshNotifications().catch(() => {}), 60000);
+    return () => clearInterval(timer);
+  }, [refreshNotifications]);
+
+  // Requests the backend has no structured endpoint for (forgotten check-out fix, absence excuse)
+  // are sent to the academic supervisor as a message. We remember which days were already sent.
+  const requestsKey = `coop_requests_${user.id}`;
+  const [requests, setRequests] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(requestsKey)) || { fix: [], excuse: [] };
+    } catch {
+      return { fix: [], excuse: [] };
+    }
+  });
+  const addRequests = (kind, dates) => {
+    setRequests((prev) => {
+      const next = { ...prev, [kind]: [...new Set([...prev[kind], ...dates])] };
+      localStorage.setItem(requestsKey, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const sendToSupervisor = async (subject, body, file) => {
+    const recipientId = assignment?.academicSupervisor?.user?.id;
+    if (!recipientId) throw new Error('لا يوجد مشرف أكاديمي مرتبط بتدريبك حالياً.');
+    let attachmentId;
+    if (file) attachmentId = (await api.uploadAttachment(file)).id;
+    await api.sendMessage({ recipientId, subject, body, ...(attachmentId && { attachmentId }) });
+  };
+
+  // --- 1. حالة توثيق الأنشطة والصور الفعلية (محلية فقط - لا يوجد endpoint لها في الـ backend بعد) ---
   const [activities, setActivities] = useState([
     {
       id: 1,
@@ -49,19 +222,83 @@ export default function App() {
     setSelectedImage(null);
   };
 
-  // --- 2. حالة سجل الحضور والغياب والانصراف المطور ---
-  const [attendanceLog, setAttendanceLog] = useState([
-    { id: 1, day: 'الأحد', date: '2026-10-18', checkIn: '08:00 ص', checkOut: 'غير مسجل ⚠️', hours: 'معلق', status: 'نسيان انصراف', note: 'يتطلب تقديم طلب تصحيح للمشرف' },
-    { id: 2, day: 'الثلاثاء', date: '2026-10-13', checkIn: '-', checkOut: '-', hours: '0 ساعات', status: 'غائب', note: 'لم يتم تسجيل حضور - متاح تقديم عذر' },
-    { id: 3, day: 'الخميس', date: '2026-10-15', checkIn: '08:00 ص', checkOut: '02:00 م', hours: '6 ساعات', status: 'حاضر', note: 'مكتمل - نطاق الجامعة' },
-    { id: 4, day: 'الاربعاء', date: '2026-10-14', checkIn: '08:05 ص', checkOut: '02:00 م', hours: '6 ساعات', status: 'حاضر', note: 'مكتمل - نطاق الجامعة' }
-  ]);
+  // --- 2. سجل الحضور والغياب والانصراف (من الـ backend) ---
+  const attendanceLog = useMemo(() => {
+    const rows = attendanceItems.map((r) => {
+      const date = r.date.slice(0, 10);
+      const day = daysArabic[new Date(`${date}T00:00:00Z`).getUTCDay()];
+      const checkIn = r.checkIn ? formatTime(r.checkIn) : '-';
+      const worked = r.checkIn && r.checkOut ? (new Date(r.checkOut) - new Date(r.checkIn)) / 36e5 : null;
 
-  const [todayCheckedIn, setTodayCheckedIn] = useState(false);
-  const [checkInTime, setCheckInTime] = useState(null);
-  const [checkInTimestamp, setCheckInTimestamp] = useState(null);
+      let status;
+      let checkOut;
+      let hours;
+      let note;
+
+      const forgotCheckOut =
+        r.checkIn && !r.checkOut && date < todayStr && (r.status === 'PRESENT' || r.status === 'LATE');
+
+      if (forgotCheckOut) {
+        status = requests.fix.includes(date) ? 'قيد مراجعة المشرف' : 'نسيان انصراف';
+        note = requests.fix.includes(date) ? 'تم إرسال طلب اعتماد الانصراف للمشرف' : 'يتطلب تقديم طلب تصحيح للمشرف';
+        checkOut = 'غير مسجل ⚠️';
+        hours = 'معلق';
+      } else if (r.checkIn && !r.checkOut && date === todayStr) {
+        status = 'قيد العمل';
+        note = 'لم يتم تسجيل الانصراف بعد';
+        checkOut = '-';
+        hours = 'جارٍ';
+      } else {
+        status = ATTENDANCE_STATUS_AR[r.status] || r.status;
+        if (r.status === 'ABSENT' && requests.excuse.includes(date)) status = 'غائب بعذر (قيد المراجعة)';
+        checkOut = r.checkOut ? formatTime(r.checkOut) : '-';
+        hours = worked !== null ? `${worked.toFixed(1)} ساعة` : '-';
+        if (r.status === 'LATE') note = 'تأخر عن موعد الحضور';
+        else if (r.status === 'EXCUSED') note = 'اعتمد المشرف العذر';
+        else if (r.status === 'ABSENT') note = 'لم يتم تسجيل حضور - متاح تقديم عذر';
+        else if (worked !== null && worked < REQUIRED_DAILY_HOURS) note = `أقل من الحد الأدنى (${REQUIRED_DAILY_HOURS} ساعات)`;
+        else note = 'مكتمل - نطاق الجامعة';
+      }
+
+      return { id: `a${r.id}`, day, date, checkIn, checkOut, hours, status, note };
+    });
+
+    // working days with no record at all are absences
+    const recordDates = new Set(attendanceItems.map((r) => r.date.slice(0, 10)));
+    const absentRows = assignment
+      ? missingWorkdays(assignment.startDate, assignment.endDate, recordDates, todayStr).map((date) => {
+          const excused = requests.excuse.includes(date);
+          return {
+            id: `m${date}`,
+            day: daysArabic[new Date(`${date}T00:00:00Z`).getUTCDay()],
+            date,
+            checkIn: '-',
+            checkOut: '-',
+            hours: '0 ساعات',
+            status: excused ? 'غائب بعذر (قيد المراجعة)' : 'غائب',
+            note: excused ? 'تم إرسال العذر للمشرف' : 'لم يتم تسجيل حضور - متاح تقديم عذر',
+          };
+        })
+      : [];
+
+    return [...rows, ...absentRows].sort((a, b) => b.date.localeCompare(a.date));
+  }, [attendanceItems, assignment, requests, todayStr]);
+
+  const todayRecord = attendanceItems.find((r) => r.date.slice(0, 10) === todayStr) || null;
+  const todayCheckedIn = Boolean(todayRecord?.checkIn && !todayRecord?.checkOut);
+  const todayDone = Boolean(todayRecord?.checkIn && todayRecord?.checkOut);
+  const checkInTime = todayRecord?.checkIn ? formatTime(todayRecord.checkIn) : null;
+  const checkInTimestamp = todayRecord?.checkIn ? new Date(todayRecord.checkIn).getTime() : null;
+  const hasPendingForgotCheckout = attendanceLog.some((item) => item.status === 'نسيان انصراف');
+
+  const workedHours = attendanceItems.reduce(
+    (sum, r) => (r.checkIn && r.checkOut ? sum + (new Date(r.checkOut) - new Date(r.checkIn)) / 36e5 : sum),
+    0
+  );
+  const hoursProgress = Math.min(100, Math.round((workedHours / TOTAL_TRAINING_HOURS) * 100));
+
   const [isWithinCampus, setIsWithinCampus] = useState(true);
-  
+
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [permissionReason, setPermissionReason] = useState('');
   
@@ -70,10 +307,11 @@ export default function App() {
   const [forgotReason, setForgotReason] = useState('');
   const [forgotProof, setForgotProof] = useState(null);
 
-  const daysArabic = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
-  const hasPendingForgotCheckout = attendanceLog.some(item => item.status === 'نسيان انصراف');
-
-  const handleCheckIn = () => {
+  const handleCheckIn = async () => {
+    if (!assignment) {
+      alert('⚠️ لا يوجد تدريب مسجل لك حالياً. قدّم على فرصة تدريبية أولاً.');
+      return;
+    }
     if (hasPendingForgotCheckout) {
       alert('⚠️ لديك يوم سابق غير مغلق بالانصراف! يرجى تقديم طلب تصحيح انصراف أولاً.');
       return;
@@ -82,120 +320,141 @@ export default function App() {
       alert('⚠️ يرجى التواجد داخل نطاق الجامعة / مقر التدريب لتسجيل الحضور.');
       return;
     }
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('ar-SA', { hour: '2-digit', minute: '2-digit' });
-    setCheckInTime(timeStr);
-    setCheckInTimestamp(now.getTime());
-    setTodayCheckedIn(true);
+    setBusy(true);
+    try {
+      await api.checkIn(assignment.id);
+      await refreshAttendance(assignment.id);
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleCheckOut = () => {
-    if (!todayCheckedIn) return;
-    const now = new Date();
-    const hoursPassed = (now.getTime() - checkInTimestamp) / (1000 * 60 * 60);
+  const doCheckOut = async () => {
+    await api.checkOut(assignment.id);
+    await refreshAttendance(assignment.id);
+  };
 
-    if (hoursPassed < 6) {
+  const handleCheckOut = async () => {
+    if (!todayCheckedIn) return;
+    const hoursPassed = (Date.now() - checkInTimestamp) / (1000 * 60 * 60);
+
+    if (hoursPassed < REQUIRED_DAILY_HOURS) {
       setShowPermissionModal(true);
       return;
     }
 
-    completeCheckOut('02:00 م', '6 ساعات', 'حاضر', 'مكتمل - نطاق الجامعة');
+    setBusy(true);
+    try {
+      await doCheckOut();
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const completeCheckOut = (outTimeStr, workedHours, statusText, noteText) => {
-    const today = new Date();
-    const dayName = daysArabic[today.getDay()];
-    const dateStr = today.toISOString().split('T')[0];
-
-    const newRecord = {
-      id: Date.now(),
-      day: dayName,
-      date: dateStr,
-      checkIn: checkInTime,
-      checkOut: outTimeStr,
-      hours: workedHours,
-      status: statusText,
-      note: noteText
-    };
-
-    setAttendanceLog([newRecord, ...attendanceLog]);
-    setTodayCheckedIn(false);
-    setCheckInTime(null);
-    setCheckInTimestamp(null);
-  };
-
-  const handleSendPermission = (e) => {
+  const handleSendPermission = async (e) => {
     e.preventDefault();
     if (!permissionReason) return;
-    setShowPermissionModal(false);
-    completeCheckOut('انصراف مبكر', 'أقل من 6 ساعات', 'في انتظار موافقة المشرف', `طلب استئذان: ${permissionReason}`);
-    setPermissionReason('');
+    setBusy(true);
+    try {
+      await doCheckOut();
+      try {
+        await sendToSupervisor(
+          'طلب استئذان / انصراف مبكر',
+          `الطالب: ${user.name}\nالتاريخ: ${todayStr}\nسبب الانصراف المبكر: ${permissionReason}`
+        );
+      } catch (err) {
+        alert(`تم تسجيل الانصراف لكن تعذر إرسال الاستئذان للمشرف: ${err.message}`);
+      }
+      setShowPermissionModal(false);
+      setPermissionReason('');
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const handleSendForgotCorrection = (e) => {
+  const handleSendForgotCorrection = async (e) => {
     e.preventDefault();
     if (!forgotReason) return;
+    const dates = attendanceLog.filter((item) => item.status === 'نسيان انصراف').map((item) => item.date);
+    if (dates.length === 0) return;
 
-    const updatedLog = attendanceLog.map(item => {
-      if (item.status === 'نسيان انصراف') {
-        return {
-          ...item,
-          checkOut: forgotOutTime,
-          hours: '6 ساعات (مقدرة)',
-          status: 'قيد مراجعة المشرف',
-          note: `تبرير النسيان: ${forgotReason} (تم إرفاق الإثبات 📄)`
-        };
-      }
-      return item;
-    });
-
-    setAttendanceLog(updatedLog);
-    setShowForgotModal(false);
-    setForgotReason('');
-    setForgotProof(null);
-    alert('✅ تم إرسال طلب اعتماد الانصراف وإثبات الحضور للمشرف بنجاح!');
+    setBusy(true);
+    try {
+      await sendToSupervisor(
+        'طلب اعتماد انصراف (نسيان تسجيل الانصراف)',
+        `الطالب: ${user.name}\nالأيام: ${dates.join('، ')}\nوقت الانصراف الفعلي/التقديري: ${forgotOutTime}\nسبب النسيان: ${forgotReason}`,
+        forgotProof
+      );
+      addRequests('fix', dates);
+      setShowForgotModal(false);
+      setForgotReason('');
+      setForgotProof(null);
+      alert('✅ تم إرسال طلب اعتماد الانصراف وإثبات الحضور للمشرف بنجاح!');
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  // --- 3. حالة التقارير الأسبوعية ومعاينتها ---
-  const [reports, setReports] = useState([
-    { 
-      id: 1, 
-      week: 'الأسبوع الأول', 
-      date: '2026-09-15', 
-      status: 'مقبول', 
-      notes: 'ممتاز، استمر بالالتزام.',
-      content: 'خلال هذا الأسبوع تم التعرف على بيئة العمل والبدء في إعداد وإلتقاط المتطلبات الخاصة بنظام التدريب التعاوني وتحديد الهيكلية للواجهات.'
-    },
-    { 
-      id: 2, 
-      week: 'الأسبوع الثاني', 
-      date: '2026-09-22', 
-      status: 'مقبول', 
-      notes: 'تقرير مكتمل بشكل جيد.',
-      content: 'تم البدء في بناء مكونات React الأساسية وتفعيل الشاشات الرئيسية والقائمة الجانبية وتنسيق الجداول للتقارير والحضور.'
+  const handleExcuse = async (log) => {
+    const reason = prompt('يرجى كتابة سبب/عذر الغياب للمشرف:');
+    if (!reason) return;
+    try {
+      await sendToSupervisor('عذر غياب', `الطالب: ${user.name}\nتاريخ الغياب: ${log.date}\nالعذر: ${reason}`);
+      addRequests('excuse', [log.date]);
+      alert('✅ تم إرسال عذر الغياب للمشرف بنجاح!');
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
     }
-  ]);
+  };
+
+  // --- 3. التقارير الأسبوعية (من الـ backend) ---
+  const reports = useMemo(
+    () =>
+      reportsRaw
+        .filter((r) => r.type !== 'APPROVAL')
+        .map((r) => ({
+          id: r.id,
+          week: r.title,
+          date: r.createdAt.slice(0, 10),
+          status: REPORT_STATUS_AR[r.status] || r.status,
+          notes: REPORT_NOTE_AR[r.status] || '',
+          content: r.content,
+        })),
+    [reportsRaw]
+  );
   const [repWeek, setRepWeek] = useState('');
   const [repContent, setRepContent] = useState('');
   const [selectedReport, setSelectedReport] = useState(null);
 
-  const handleAddReport = (e) => {
+  const handleAddReport = async (e) => {
     e.preventDefault();
     if (!repWeek || !repContent) return;
-    const newRep = {
-      id: Date.now(),
-      week: repWeek,
-      date: new Date().toISOString().split('T')[0],
-      status: 'قيد المراجعة',
-      notes: 'تم التسليم وفي انتظار مراجعة المشرف.',
-      content: repContent
-    };
-    setReports([newRep, ...reports]);
-    setRepWeek('');
-    setRepContent('');
+    if (!assignment) {
+      alert('⚠️ لا يوجد تدريب مسجل لك حالياً لإرسال التقرير.');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.submitReport({ assignmentId: assignment.id, type: 'WEEKLY', title: repWeek, content: repContent });
+      await refreshReports();
+      setRepWeek('');
+      setRepContent('');
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  // --- 4. حالة المهام ومعاينتها ---
+  // --- 4. حالة المهام ومعاينتها (بيانات تجريبية - لا يوجد endpoint للمهام في الـ backend بعد) ---
   const [tasks, setTasks] = useState([
     {
       id: 1,
@@ -224,10 +483,90 @@ export default function App() {
   ]);
   const [selectedTask, setSelectedTask] = useState(null);
 
+  // --- 5. فرص التدريب وطلباتي ---
+  const appliedIds = new Set(applications.map((a) => a.opportunityId));
+
+  const handleApply = async (opportunityId) => {
+    setBusy(true);
+    try {
+      await api.apply(opportunityId);
+      await refreshApplications();
+      alert('✅ تم إرسال طلب التدريب بنجاح!');
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // --- 6. الإشعارات ---
+  const handleOpenNotification = (n) => {
+    if (!n.isRead) {
+      setNotifications((prev) => prev.map((x) => (x.id === n.id ? { ...x, isRead: true } : x)));
+      setUnreadCount((c) => Math.max(0, c - 1));
+      api.markRead(n.id).catch(() => refreshNotifications().catch(() => {}));
+    }
+    const tab = tabForNotification(n.message);
+    if (tab) setActiveTab(tab);
+  };
+
+  const handleMarkAllRead = async () => {
+    try {
+      await api.markAllRead();
+      await refreshNotifications();
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    }
+  };
+
+  // --- 7. خطاب التدريب ---
+  const handleOpenLetter = async () => {
+    try {
+      setLetter(await api.letter(assignment.id));
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    }
+  };
+
+  // قيم الواجهة
+  const orgName = assignment?.opportunity?.organization?.name || '—';
+  const opportunityTitle = assignment?.opportunity?.title || '—';
+  const orgSupervisorName = assignment?.orgSupervisor?.user?.name || '—';
+  const academicSupervisorName = assignment?.academicSupervisor?.user?.name || '—';
+  const semesterLabel =
+    [assignment?.semester, assignment?.academicYear].filter(Boolean).join(' - ') || 'التدريب التعاوني';
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-500 text-sm">
+        جاري تحميل بياناتك...
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white max-w-md w-full rounded-2xl border border-slate-100 shadow-sm p-6 text-center space-y-4">
+          <AlertTriangle size={32} className="text-amber-500 mx-auto" />
+          <p className="text-sm text-slate-700">{loadError}</p>
+          <div className="flex justify-center gap-2">
+            <button onClick={loadAll} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-5 py-2 rounded-xl transition">
+              إعادة المحاولة
+            </button>
+            <button onClick={onLogout} className="text-slate-500 hover:bg-slate-100 text-xs font-medium px-5 py-2 rounded-xl transition">
+              تسجيل الخروج
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex">
       {/* القائمة الجانبية */}
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} unreadCount={unreadCount} onLogout={onLogout} />
 
       {/* المحتوى الرئيسي */}
       <main className="flex-1 mr-64 p-8">
@@ -235,12 +574,12 @@ export default function App() {
         {/* الترويسة */}
         <header className="mb-8 flex justify-between items-center">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">مرحباً بك، محمد 👋</h1>
+            <h1 className="text-2xl font-bold text-slate-800">مرحباً بك، {user.name} 👋</h1>
             <p className="text-slate-500 text-sm mt-1">نظام بوابة التدريب التعاوني الميداني التفاعلي.</p>
           </div>
           <div className="bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm flex items-center gap-2 text-slate-600 text-sm">
             <Calendar size={18} className="text-blue-600" />
-            <span>الفصل الدراسي الأول - 2026</span>
+            <span>{semesterLabel}</span>
           </div>
         </header>
 
@@ -254,11 +593,11 @@ export default function App() {
                   <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Clock size={22} /></div>
                 </div>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-3xl font-bold text-slate-800">180</span>
-                  <span className="text-slate-400 text-sm">/ 280 ساعة</span>
+                  <span className="text-3xl font-bold text-slate-800">{Math.round(workedHours)}</span>
+                  <span className="text-slate-400 text-sm">/ {TOTAL_TRAINING_HOURS} ساعة</span>
                 </div>
                 <div className="w-full bg-slate-100 h-2 rounded-full mt-4 overflow-hidden">
-                  <div className="bg-blue-600 h-full rounded-full" style={{ width: '64%' }}></div>
+                  <div className="bg-blue-600 h-full rounded-full" style={{ width: `${hoursProgress}%` }}></div>
                 </div>
               </div>
 
@@ -299,15 +638,31 @@ export default function App() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-                <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                  <Building2 className="text-blue-600" size={20} />
-                  معلومات جهة التدريب
-                </h2>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                    <Building2 className="text-blue-600" size={20} />
+                    معلومات جهة التدريب
+                  </h2>
+                  {assignment && (
+                    <button
+                      onClick={handleOpenLetter}
+                      className="text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition flex items-center gap-1"
+                    >
+                      <FileText size={14} /> خطاب التدريب
+                    </button>
+                  )}
+                </div>
+                {!assignment && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl p-3 mb-4">
+                    لم يتم تعيينك في جهة تدريب بعد. قدّم على فرصة تدريبية من صفحة{' '}
+                    <button onClick={() => setActiveTab('opportunities')} className="font-bold underline">فرص التدريب وطلباتي</button>.
+                  </p>
+                )}
                 <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">الجهة</span><span className="font-semibold text-slate-700">شركة تقنية المعلومات والحلول الرقمية</span></div>
-                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">القسم / الإدارة</span><span className="font-semibold text-slate-700">تطوير البرمجيات والأنظمة</span></div>
-                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">المشرف الميداني</span><span className="font-semibold text-slate-700">أ. أسامة القحطاني</span></div>
-                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">المشرف الأكاديمي</span><span className="font-semibold text-slate-700">د. عبدالمجيد الغامدي</span></div>
+                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">الجهة</span><span className="font-semibold text-slate-700">{orgName}</span></div>
+                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">الفرصة التدريبية</span><span className="font-semibold text-slate-700">{opportunityTitle}</span></div>
+                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">المشرف الميداني</span><span className="font-semibold text-slate-700">{orgSupervisorName}</span></div>
+                  <div className="p-4 bg-slate-50 rounded-xl"><span className="text-slate-400 block text-xs mb-1">المشرف الأكاديمي</span><span className="font-semibold text-slate-700">{academicSupervisorName}</span></div>
                 </div>
               </div>
 
@@ -477,10 +832,14 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-3">
-                {!todayCheckedIn ? (
+                {todayDone ? (
+                  <span className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-100 px-4 py-3 rounded-xl font-medium">
+                    تم تسجيل حضورك وانصرافك لهذا اليوم ✅
+                  </span>
+                ) : !todayCheckedIn ? (
                   <button 
                     onClick={handleCheckIn}
-                    disabled={hasPendingForgotCheckout}
+                    disabled={hasPendingForgotCheckout || busy || !assignment}
                     className={`font-medium px-6 py-3 rounded-xl text-sm transition flex items-center gap-2 shadow-lg ${
                       hasPendingForgotCheckout 
                         ? 'bg-slate-300 text-slate-500 cursor-not-allowed shadow-none' 
@@ -492,6 +851,7 @@ export default function App() {
                 ) : (
                   <button 
                     onClick={handleCheckOut}
+                    disabled={busy}
                     className="bg-red-600 hover:bg-red-700 text-white font-medium px-6 py-3 rounded-xl text-sm transition flex items-center gap-2 shadow-lg shadow-red-600/20"
                   >
                     <LogOut size={18} /> تسجيل انصراف (تم الحضور: {checkInTime})
@@ -538,16 +898,7 @@ export default function App() {
                           {/* زر تقديم عذر غياب لو الحالة غائب */}
                           {log.status === 'غائب' && (
                             <button 
-                              onClick={() => {
-                                const reason = prompt('يرجى كتابة سبب/عذر الغياب للمشرف:');
-                                if (reason) {
-                                  const updated = attendanceLog.map(item => 
-                                    item.id === log.id ? {...item, status: 'غائب بعذر (قيد المراجعة)', note: `العذر المرفق: ${reason}`} : item
-                                  );
-                                  setAttendanceLog(updated);
-                                  alert('✅ تم إرسال عذر الغياب للمشرف بنجاح!');
-                                }
-                              }}
+                              onClick={() => handleExcuse(log)}
                               className="block text-[11px] text-blue-600 font-bold underline mt-1 hover:text-blue-800"
                             >
                               + تقديم عذر غياب
@@ -698,7 +1049,7 @@ export default function App() {
                     className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-500"
                   ></textarea>
                 </div>
-                <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-blue-500/20">
+                <button type="submit" disabled={busy} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-blue-500/20">
                   إرسال التقرير للمشرف
                 </button>
               </form>
@@ -707,6 +1058,9 @@ export default function App() {
             <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
               <h3 className="font-bold text-slate-800 text-base mb-4">التقارير المرفوعة سابقاً (اضغطي لقراءة التفاصيل)</h3>
               <div className="space-y-3">
+                {reports.length === 0 && (
+                  <p className="text-xs text-slate-400">لا توجد تقارير مرفوعة بعد.</p>
+                )}
                 {reports.map((r) => (
                   <div 
                     key={r.id} 
@@ -722,7 +1076,7 @@ export default function App() {
                       </div>
                       <p className="text-xs text-slate-400 mt-1">تاريخ التسليم: {r.date} — {r.notes}</p>
                     </div>
-                    <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${r.status === 'مقبول' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                    <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${r.status === 'مقبول' ? 'bg-emerald-50 text-emerald-600' : r.status === 'مرفوض' ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'}`}>
                       {r.status}
                     </span>
                   </div>
@@ -870,45 +1224,154 @@ export default function App() {
           </div>
         )}
 
-        {/* 6. مركز الإشعارات المتفاعل */}
-        {activeTab === 'notifications' && (
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
-            <div className="flex justify-between items-center mb-2">
-              <h2 className="text-lg font-bold text-slate-800">مركز الإشعارات والتنبيهات الواردة</h2>
-              <span className="text-xs text-slate-400">تحديث فوري من المشرفين</span>
-            </div>
-            
-            <div 
-              onClick={() => setActiveTab('reports')}
-              className="p-4 bg-blue-50/50 hover:bg-blue-100/60 border border-blue-100 rounded-xl flex items-start gap-3 cursor-pointer transition group"
-            >
-              <span className="text-blue-600 font-bold text-lg mt-0.5">📌</span>
-              <div className="flex-1">
-                <div className="flex justify-between items-center">
-                  <h4 className="font-bold text-slate-800 text-sm group-hover:text-blue-600 transition">تمت الموافقة على التقرير الأسبوعي السادس</h4>
-                  <span className="text-[11px] text-blue-600 font-semibold underline">عرض التقرير ←</span>
-                </div>
-                <p className="text-xs text-slate-500 mt-1">اعتمد المشرف الأكاديمي د. عبدالمجيد الغامدي تقريرك الأسبوعي بنجاح.</p>
-                <span className="text-[10px] text-slate-400 mt-2 block">منذ ساعتين</span>
+        {/* 6. فرص التدريب وطلباتي */}
+        {activeTab === 'opportunities' && (
+          <div className="space-y-8">
+            <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                  <Briefcase size={20} className="text-blue-600" />
+                  طلباتي ({applications.length})
+                </h2>
+                <button
+                  onClick={loadAll}
+                  className="text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition"
+                >
+                  تحديث
+                </button>
               </div>
+              {applications.length === 0 ? (
+                <p className="text-xs text-slate-400">لم تقدم على أي فرصة تدريبية بعد.</p>
+              ) : (
+                <div className="space-y-3">
+                  {applications.map((a) => {
+                    const st = APPLICATION_STATUS[a.status] || { label: a.status, cls: 'bg-slate-50 text-slate-600' };
+                    return (
+                      <div key={a.id} className="p-4 bg-slate-50 border border-slate-100 rounded-xl flex justify-between items-center">
+                        <div>
+                          <h4 className="font-bold text-slate-800 text-sm">{a.opportunity?.title}</h4>
+                          <p className="text-xs text-slate-400 mt-1">
+                            {a.opportunity?.organization?.name} — تاريخ التقديم: {a.createdAt.slice(0, 10)}
+                          </p>
+                        </div>
+                        <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${st.cls}`}>{st.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
-            <div 
-              onClick={() => setActiveTab('tasks')}
-              className="p-4 bg-emerald-50/50 hover:bg-emerald-100/60 border border-emerald-100 rounded-xl flex items-start gap-3 cursor-pointer transition group"
-            >
-              <span className="text-emerald-600 font-bold text-lg mt-0.5">🎯</span>
-              <div className="flex-1">
-                <div className="flex justify-between items-center">
-                  <h4 className="font-bold text-slate-800 text-sm group-hover:text-emerald-700 transition">إضافة مهمة جديدة لك من المشرف الميداني</h4>
-                  <span className="text-[11px] text-emerald-600 font-semibold underline">فتح المهام لمعاينتها ←</span>
-                </div>
-                <p className="text-xs text-slate-500 mt-1">قام المشرف الميداني بإضافة مهمة جديدة (اختبار ربط قاعدة البيانات).</p>
-                <span className="text-[10px] text-slate-400 mt-2 block">منذ يوم واحد</span>
+            <div>
+              <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+                <Building2 size={20} className="text-blue-600" />
+                الفرص التدريبية المتاحة ({opportunities.length})
+              </h2>
+              {opportunities.length === 0 && (
+                <p className="text-xs text-slate-400">لا توجد فرص تدريبية مفتوحة حالياً.</p>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {opportunities.map((o) => (
+                  <div key={o.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between">
+                    <div>
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg">
+                          {o.organization?.name}
+                        </span>
+                        <span className="text-xs text-slate-400">المقاعد: {o.seats}</span>
+                      </div>
+                      <h3 className="font-bold text-slate-800 text-base mb-2">{o.title}</h3>
+                      <p className="text-slate-500 text-xs leading-relaxed">{o.description}</p>
+                      <p className="text-[11px] text-slate-400 mt-3">
+                        من {o.startDate.slice(0, 10)} إلى {o.endDate.slice(0, 10)}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleApply(o.id)}
+                      disabled={busy || appliedIds.has(o.id)}
+                      className={`mt-4 font-medium px-5 py-2.5 rounded-xl text-sm transition ${
+                        appliedIds.has(o.id)
+                          ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                          : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'
+                      }`}
+                    >
+                      {appliedIds.has(o.id) ? 'تم التقديم ✅' : 'تقديم طلب'}
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
         )}
+
+        {/* 7. مركز الإشعارات (من الـ backend) */}
+        {activeTab === 'notifications' && (
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="text-lg font-bold text-slate-800">مركز الإشعارات والتنبيهات الواردة</h2>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400">غير المقروءة: {unreadCount}</span>
+                {unreadCount > 0 && (
+                  <button onClick={handleMarkAllRead} className="text-xs text-blue-600 font-semibold underline">
+                    تعليم الكل كمقروء
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {notifications.length === 0 && (
+              <p className="text-xs text-slate-400">لا توجد إشعارات حالياً.</p>
+            )}
+
+            {notifications.map((n) => (
+              <div
+                key={n.id}
+                onClick={() => handleOpenNotification(n)}
+                className={`p-4 border rounded-xl flex items-start gap-3 cursor-pointer transition ${
+                  n.isRead
+                    ? 'bg-slate-50 border-slate-100 hover:bg-slate-100'
+                    : 'bg-blue-50/50 border-blue-100 hover:bg-blue-100/60'
+                }`}
+              >
+                <span className="text-lg mt-0.5">{n.isRead ? '🔔' : '📌'}</span>
+                <div className="flex-1">
+                  <p className={`text-sm ${n.isRead ? 'text-slate-600' : 'font-bold text-slate-800'}`}>{n.message}</p>
+                  <span className="text-[10px] text-slate-400 mt-2 block">{timeAgo(n.createdAt)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* خطاب التدريب */}
+        {letter && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setLetter(null)}>
+            <div id="letter-print" className="bg-white rounded-2xl p-8 max-w-xl w-full shadow-2xl border border-slate-100 space-y-4" onClick={(e) => e.stopPropagation()}>
+              <div className="text-center border-b border-slate-100 pb-3">
+                <h3 className="font-bold text-slate-800 text-lg">{letter.title}</h3>
+                <p className="text-xs text-slate-500 mt-1">{letter.university}</p>
+                <p className="text-xs text-slate-400">تاريخ الإصدار: {letter.issuedDate}</p>
+              </div>
+              <p className="text-sm text-slate-700">إلى: <strong>{letter.companyName}</strong></p>
+              <p className="text-sm text-slate-700 leading-loose">{letter.content}</p>
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl text-xs text-slate-600">
+                <div><span className="text-slate-400 block mb-0.5">الطالب</span><strong>{letter.studentName}</strong></div>
+                <div><span className="text-slate-400 block mb-0.5">الرقم الجامعي</span><strong>{letter.universityId}</strong></div>
+                <div><span className="text-slate-400 block mb-0.5">الفرصة التدريبية</span><strong>{letter.trainingTitle}</strong></div>
+                <div><span className="text-slate-400 block mb-0.5">فترة التدريب</span><strong>{letter.startDate} → {letter.endDate}</strong></div>
+              </div>
+              <div className="no-print pt-2 flex justify-end gap-2">
+                <button onClick={() => window.print()} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-5 py-2 rounded-xl transition flex items-center gap-1">
+                  <Printer size={14} /> طباعة
+                </button>
+                <button onClick={() => setLetter(null)} className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-medium px-5 py-2 rounded-xl transition">
+                  إغلاق
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
 
       </main>
     </div>
