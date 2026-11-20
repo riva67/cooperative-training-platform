@@ -19,11 +19,14 @@ const REPORT_NOTE_AR = {
   DRAFT: 'لم يتم تسليم التقرير بعد.',
   SUBMITTED: 'تم التسليم وفي انتظار مراجعة المشرف.',
   APPROVED: 'تم اعتماد التقرير من المشرف.',
-  REJECTED: 'تم رفض التقرير، يرجى مراجعة المشرف وإعادة التسليم.',
+  REJECTED: 'تم رفض التقرير، عدّل المحتوى من هنا وأعد إرساله للمشرف.',
 };
+// reports the training provider sends about the trainee
+const PROVIDER_REPORT_AR = { ABSENCE_WARNING: 'إنذار غياب', VISIT: 'تقرير زيارة', APPROVAL: 'إفادة جهة التدريب' };
+const OPP_TYPE_AR = { COOP: 'تدريب تعاوني', SUMMER: 'تدريب صيفي' };
 const APPLICATION_STATUS = {
-  PENDING: { label: 'قيد المراجعة', cls: 'bg-amber-50 text-amber-600' },
-  NOMINATED: { label: 'مرشّح من الجامعة', cls: 'bg-blue-50 text-blue-600' },
+  PENDING: { label: 'بانتظار ترشيح المشرف الأكاديمي', cls: 'bg-amber-50 text-amber-600' },
+  NOMINATED: { label: 'مرشّح — بانتظار قرار جهة التدريب', cls: 'bg-emerald-50 text-emerald-600' },
   APPROVED: { label: 'مقبول', cls: 'bg-emerald-50 text-emerald-600' },
   REJECTED: { label: 'مرفوض', cls: 'bg-rose-50 text-rose-600' },
 };
@@ -416,37 +419,123 @@ function Portal({ user, onLogout }) {
   };
 
   // --- 3. التقارير الأسبوعية (من الـ backend) ---
+  // my weekly / final reports
   const reports = useMemo(
     () =>
       reportsRaw
-        .filter((r) => r.type !== 'APPROVAL')
+        .filter((r) => r.type === 'WEEKLY' || r.type === 'FINAL')
         .map((r) => ({
           id: r.id,
           week: r.title,
+          type: r.type,
+          weekNumber: r.weekNumber,
           date: r.createdAt.slice(0, 10),
+          rawStatus: r.status,
           status: REPORT_STATUS_AR[r.status] || r.status,
           notes: REPORT_NOTE_AR[r.status] || '',
           content: r.content,
+          attachment: r.attachment,
         })),
     [reportsRaw]
   );
+  // absence warnings / visit reports sent by the training provider
+  const providerReports = useMemo(() => reportsRaw.filter((r) => PROVIDER_REPORT_AR[r.type]), [reportsRaw]);
+
+  const [repType, setRepType] = useState('WEEKLY');
   const [repWeek, setRepWeek] = useState('');
   const [repContent, setRepContent] = useState('');
+  const [repFile, setRepFile] = useState(null);
   const [selectedReport, setSelectedReport] = useState(null);
+  const [editContent, setEditContent] = useState('');
 
   const handleAddReport = async (e) => {
     e.preventDefault();
-    if (!repWeek || !repContent) return;
+    if ((repType === 'WEEKLY' && !repWeek) || !repContent.trim()) {
+      alert('⚠️ اكتب محتوى التقرير' + (repType === 'WEEKLY' ? ' وحدد رقم الأسبوع.' : '.'));
+      return;
+    }
     if (!assignment) {
       alert('⚠️ لا يوجد تدريب مسجل لك حالياً لإرسال التقرير.');
       return;
     }
     setBusy(true);
     try {
-      await api.submitReport({ assignmentId: assignment.id, type: 'WEEKLY', title: repWeek, content: repContent });
+      // the Word / PDF file is uploaded first, then linked to the report
+      const attachmentId = repFile ? (await api.uploadAttachment(repFile)).id : undefined;
+      await api.submitReport({
+        assignmentId: assignment.id,
+        type: repType,
+        title: repType === 'WEEKLY' ? `تقرير الأسبوع ${repWeek}` : 'التقرير النهائي',
+        ...(repType === 'WEEKLY' && { weekNumber: Number(repWeek) }),
+        content: repContent.trim(),
+        ...(attachmentId && { attachmentId }),
+      });
       await refreshReports();
       setRepWeek('');
       setRepContent('');
+      setRepFile(null);
+      e.target.reset();
+      alert('✅ تم إرسال التقرير للمشرف.');
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openReport = (r) => {
+    setSelectedReport(r);
+    setEditContent(r.content || '');
+  };
+
+  // edit a pending report, or fix a rejected one and send it again
+  const handleResubmit = async () => {
+    if (!editContent.trim()) return;
+    setBusy(true);
+    try {
+      await api.updateReport(selectedReport.id, { content: editContent.trim() });
+      await refreshReports();
+      setSelectedReport(null);
+      alert('✅ تم إرسال التقرير المعدّل للمشرف.');
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const downloadFile = async (att) => {
+    try {
+      await api.downloadAttachment(att.id, att.originalName);
+    } catch (err) {
+      alert(`⚠️ ${err.message}`);
+    }
+  };
+
+  // --- بعد انتهاء التدريب: الدرجة النهائية وتسجيل التوظيف (مؤشر الأثر) ---
+  const [finalGrade, setFinalGrade] = useState(null);
+  const [employment, setEmployment] = useState({ employed: '', employerName: '' });
+  useEffect(() => {
+    if (!assignment) return;
+    api.finalGrade(assignment.id).then((g) => setFinalGrade(g.grade)).catch(() => setFinalGrade(null));
+  }, [assignment]);
+
+  const handleEmployment = async (e) => {
+    e.preventDefault();
+    if (!employment.employed) return;
+    const employed = employment.employed === 'yes';
+    if (employed && !employment.employerName.trim()) {
+      alert('⚠️ اكتب اسم جهة العمل.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.recordEmployment(assignment.id, {
+        employed,
+        ...(employed && { employerName: employment.employerName.trim() }),
+      });
+      setAssignment(updated);
+      alert('✅ شكراً لك، تم تسجيل حالتك الوظيفية.');
     } catch (err) {
       alert(`⚠️ ${err.message}`);
     } finally {
@@ -551,7 +640,7 @@ function Portal({ user, onLogout }) {
           <AlertTriangle size={32} className="text-amber-500 mx-auto" />
           <p className="text-sm text-slate-700">{loadError}</p>
           <div className="flex justify-center gap-2">
-            <button onClick={loadAll} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-5 py-2 rounded-xl transition">
+            <button onClick={loadAll} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium px-5 py-2 rounded-xl transition">
               إعادة المحاولة
             </button>
             <button onClick={onLogout} className="text-slate-500 hover:bg-slate-100 text-xs font-medium px-5 py-2 rounded-xl transition">
@@ -564,40 +653,114 @@ function Portal({ user, onLogout }) {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
+    <div className="min-h-screen bg-slate-50 flex rtl" dir="rtl">
       {/* القائمة الجانبية */}
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} unreadCount={unreadCount} onLogout={onLogout} />
 
       {/* المحتوى الرئيسي */}
-      <main className="flex-1 mr-64 p-8">
-        
-        {/* الترويسة */}
-        <header className="mb-8 flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-800">مرحباً بك، {user.name} 👋</h1>
-            <p className="text-slate-500 text-sm mt-1">نظام بوابة التدريب التعاوني الميداني التفاعلي.</p>
+      <main className="flex-1 mr-64">
+
+        {/* هيدر بصورة وخلفية خضراء زمردية متوافقة مع هوية المشروع */}
+        <div className="relative bg-emerald-900 text-white overflow-hidden shadow-md mb-8">
+          <div className="absolute inset-0 opacity-25 mix-blend-overlay">
+            <img
+              src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=1200&auto=format&fit=crop&q=80"
+              alt="Header Background"
+              className="w-full h-full object-cover"
+            />
           </div>
-          <div className="bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm flex items-center gap-2 text-slate-600 text-sm">
-            <Calendar size={18} className="text-blue-600" />
-            <span>{semesterLabel}</span>
+          <div className="absolute inset-0 bg-gradient-to-l from-emerald-950/90 via-emerald-900/80 to-emerald-800/70"></div>
+          <div className="relative z-10 px-8 py-8 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div>
+              <span className="bg-emerald-700/80 text-emerald-100 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider mb-2 inline-block">
+                منصة التدريب التعاوني
+              </span>
+              <h1 className="text-2xl md:text-3xl font-extrabold text-white">مرحباً بك، {user.name} 👋</h1>
+              <p className="text-emerald-100 text-xs md:text-sm mt-1">نظام بوابة التدريب التعاوني الميداني التفاعلي - لوحة متابعة المهام والحضور.</p>
+            </div>
+            <div className="bg-white/10 backdrop-blur-md px-4 py-2.5 rounded-xl border border-white/20 shadow-sm flex items-center gap-2 text-white text-xs md:text-sm">
+              <Calendar size={18} className="text-emerald-300" />
+              <span>{semesterLabel}</span>
+            </div>
           </div>
-        </header>
+        </div>
+
+        <div className="px-8 pb-12">
 
         {/* 1. الرئيسية (Dashboard) */}
         {activeTab === 'dashboard' && (
           <div className="space-y-8">
+            {/* بعد اكتمال التدريب: الدرجة النهائية + سؤال التوظيف (مؤشر "نسبة التوظيف بعد التدريب") */}
+            {assignment?.status === 'COMPLETED' && (
+              <div className="bg-white p-6 rounded-2xl border border-emerald-100 shadow-sm grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <h2 className="text-lg font-bold text-slate-800 mb-2">🎓 أكملت التدريب التعاوني</h2>
+                  <p className="text-sm text-slate-500">
+                    الدرجة النهائية:{' '}
+                    <strong className="text-2xl text-emerald-700">{finalGrade == null ? '—' : `${finalGrade} / 100`}</strong>
+                  </p>
+                </div>
+                {assignment.employedAfterTraining == null ? (
+                  <form onSubmit={handleEmployment} className="space-y-3">
+                    <p className="text-sm font-bold text-slate-700">هل حصلت على وظيفة بعد التدريب؟</p>
+                    <div className="flex gap-6 text-sm">
+                      {[['yes', 'نعم'], ['no', 'ليس بعد']].map(([v, l]) => (
+                        <label key={v} className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="radio"
+                            name="employed"
+                            checked={employment.employed === v}
+                            onChange={() => setEmployment({ ...employment, employed: v })}
+                          />
+                          {l}
+                        </label>
+                      ))}
+                    </div>
+                    {employment.employed === 'yes' && (
+                      <input
+                        placeholder="اسم جهة العمل"
+                        value={employment.employerName}
+                        onChange={(e) => setEmployment({ ...employment, employerName: e.target.value })}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
+                      />
+                    )}
+                    <button
+                      type="submit"
+                      disabled={busy || !employment.employed}
+                      className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-medium px-5 py-2 rounded-xl transition"
+                    >
+                      حفظ
+                    </button>
+                  </form>
+                ) : (
+                  <div className="text-sm text-slate-600 bg-emerald-50 rounded-xl p-4">
+                    {assignment.employedAfterTraining
+                      ? `✅ مبارك! سجّلت أنك توظفت في: ${assignment.employerName}`
+                      : 'سجّلت أنك لم تتوظف بعد — بالتوفيق! يمكنك تحديث حالتك لاحقاً.'}
+                    {!assignment.employedAfterTraining && (
+                      <button
+                        onClick={() => setAssignment({ ...assignment, employedAfterTraining: null })}
+                        className="block mt-2 text-emerald-700 underline text-xs"
+                      >
+                        تحديث الحالة
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-slate-500 text-sm font-medium">ساعات التدريب</span>
-                  <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl"><Clock size={22} /></div>
+                  <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><Clock size={22} /></div>
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-bold text-slate-800">{Math.round(workedHours)}</span>
                   <span className="text-slate-400 text-sm">/ {TOTAL_TRAINING_HOURS} ساعة</span>
                 </div>
                 <div className="w-full bg-slate-100 h-2 rounded-full mt-4 overflow-hidden">
-                  <div className="bg-blue-600 h-full rounded-full" style={{ width: `${hoursProgress}%` }}></div>
+                  <div className="bg-emerald-600 h-full rounded-full" style={{ width: `${hoursProgress}%` }}></div>
                 </div>
               </div>
 
@@ -620,17 +783,17 @@ function Portal({ user, onLogout }) {
 
               <div 
                 onClick={() => setActiveTab('activities')} 
-                className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:border-purple-300 hover:shadow-md transition duration-200"
+                className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:border-emerald-300 hover:shadow-md transition duration-200"
               >
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-slate-500 text-sm font-medium">الأنشطة الموثقة بالصور</span>
-                  <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl"><ImageIcon size={22} /></div>
+                  <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl"><ImageIcon size={22} /></div>
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xl font-bold text-slate-800">{activities.length}</span>
                   <span className="text-slate-400 text-sm">إثباتات مصورة</span>
                 </div>
-                <p className="text-purple-600 text-xs mt-4 flex items-center gap-1">
+                <p className="text-emerald-600 text-xs mt-4 flex items-center gap-1">
                   اضغطي للانتقال لصفحة الأنشطة ←
                 </p>
               </div>
@@ -640,13 +803,13 @@ function Portal({ user, onLogout }) {
               <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
                 <div className="flex justify-between items-center mb-4">
                   <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                    <Building2 className="text-blue-600" size={20} />
+                    <Building2 className="text-emerald-600" size={20} />
                     معلومات جهة التدريب
                   </h2>
                   {assignment && (
                     <button
                       onClick={handleOpenLetter}
-                      className="text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition flex items-center gap-1"
+                      className="text-xs font-semibold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition flex items-center gap-1"
                     >
                       <FileText size={14} /> خطاب التدريب
                     </button>
@@ -687,7 +850,7 @@ function Portal({ user, onLogout }) {
           <div className="space-y-8">
             <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
               <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <Plus size={20} className="text-blue-600" />
+                <Plus size={20} className="text-emerald-600" />
                 إضافة نشاط / مهمة موثقة بصلب العمل
               </h2>
               <form onSubmit={handleAddActivity} className="space-y-4">
@@ -699,14 +862,14 @@ function Portal({ user, onLogout }) {
                       placeholder="مثال: إعداد السيرفر أو برمجة واجهة"
                       value={newTitle}
                       onChange={(e) => setNewTitle(e.target.value)}
-                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-500"
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
                     />
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1">إرفاق صورة إثبات النشاط من جهازك</label>
                     <label className="flex items-center justify-between px-4 py-2.5 border border-dashed border-slate-300 rounded-xl bg-slate-50 cursor-pointer hover:bg-slate-100 transition">
                       <div className="flex items-center gap-2 text-slate-600 text-xs">
-                        <Upload size={18} className="text-blue-600" />
+                        <Upload size={18} className="text-emerald-600" />
                         <span>{selectedImage ? 'تم اختيار الصورة ✅' : 'اضغط لاختيار صورة من جهازك'}</span>
                       </div>
                       <input type="file" accept="image/*" onChange={handleImageChange} className="hidden" />
@@ -728,13 +891,13 @@ function Portal({ user, onLogout }) {
                     placeholder="اكتب توضيحاً سريعاً عما قمت به..."
                     value={newDesc}
                     onChange={(e) => setNewDesc(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-500"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
                   ></textarea>
                 </div>
 
                 <button 
                   type="submit"
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-blue-500/20"
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-emerald-500/20"
                 >
                   حفظ وتوثيق النشاط
                 </button>
@@ -743,7 +906,7 @@ function Portal({ user, onLogout }) {
 
             <div>
               <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <ImageIcon size={20} className="text-blue-600" />
+                <ImageIcon size={20} className="text-emerald-600" />
                 معرض الأنشطة والإثباتات المصورة ({activities.length})
               </h2>
 
@@ -758,7 +921,7 @@ function Portal({ user, onLogout }) {
                     </div>
                     <div className="p-5">
                       <div className="flex justify-between items-start mb-2">
-                        <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg">{act.category}</span>
+                        <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg">{act.category}</span>
                         <span className="text-xs text-slate-400">{act.date}</span>
                       </div>
                       <h3 className="font-bold text-slate-800 text-base mb-2">{act.title}</h3>
@@ -852,7 +1015,7 @@ function Portal({ user, onLogout }) {
                   <button 
                     onClick={handleCheckOut}
                     disabled={busy}
-                    className="bg-red-600 hover:bg-red-700 text-white font-medium px-6 py-3 rounded-xl text-sm transition flex items-center gap-2 shadow-lg shadow-red-600/20"
+                    className="bg-rose-600 hover:bg-rose-700 text-white font-medium px-6 py-3 rounded-xl text-sm transition flex items-center gap-2 shadow-lg shadow-rose-600/20"
                   >
                     <LogOut size={18} /> تسجيل انصراف (تم الحضور: {checkInTime})
                   </button>
@@ -881,7 +1044,7 @@ function Portal({ user, onLogout }) {
                       <tr key={log.id} className="hover:bg-slate-50">
                         <td className="p-4 font-semibold text-slate-800">{log.day} - {log.date}</td>
                         <td className="p-4 text-emerald-600 font-medium">{log.checkIn}</td>
-                        <td className={`p-4 font-medium ${log.checkOut.includes('غير') ? 'text-amber-600' : 'text-red-500'}`}>
+                        <td className={`p-4 font-medium ${log.checkOut.includes('غير') ? 'text-amber-600' : 'text-rose-500'}`}>
                           {log.checkOut}
                         </td>
                         <td className="p-4">{log.hours}</td>
@@ -889,8 +1052,8 @@ function Portal({ user, onLogout }) {
                           <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${
                             log.status === 'حاضر' ? 'bg-emerald-50 text-emerald-600' : 
                             log.status === 'غائب' ? 'bg-rose-50 text-rose-600 border border-rose-200' :
-                            log.status.includes('عذر') ? 'bg-purple-50 text-purple-700 border border-purple-200' :
-                            log.status === 'نسيان انصراف' ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-blue-50 text-blue-600'
+                            log.status.includes('عذر') ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                            log.status === 'نسيان انصراف' ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-emerald-50 text-emerald-600'
                           }`}>
                             {log.status}
                           </span>
@@ -899,7 +1062,7 @@ function Portal({ user, onLogout }) {
                           {log.status === 'غائب' && (
                             <button 
                               onClick={() => handleExcuse(log)}
-                              className="block text-[11px] text-blue-600 font-bold underline mt-1 hover:text-blue-800"
+                              className="block text-[11px] text-emerald-600 font-bold underline mt-1 hover:text-emerald-800"
                             >
                               + تقديم عذر غياب
                             </button>
@@ -932,7 +1095,7 @@ function Portal({ user, onLogout }) {
                         value={forgotOutTime}
                         onChange={(e) => setForgotOutTime(e.target.value)}
                         placeholder="مثال: 02:00 م"
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-emerald-500"
                       />
                     </div>
                     <div>
@@ -943,7 +1106,7 @@ function Portal({ user, onLogout }) {
                         placeholder="اكتب التبرير للمشرف..."
                         value={forgotReason}
                         onChange={(e) => setForgotReason(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-emerald-500"
                       ></textarea>
                     </div>
                     <div>
@@ -952,7 +1115,7 @@ function Portal({ user, onLogout }) {
                         type="file" 
                         accept="image/*,.pdf"
                         onChange={(e) => setForgotProof(e.target.files[0])}
-                        className="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:bg-blue-50 file:text-blue-600 hover:file:bg-blue-100"
+                        className="w-full text-xs text-slate-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:bg-emerald-50 file:text-emerald-600 hover:file:bg-emerald-100"
                       />
                     </div>
                     <div className="flex justify-end gap-2 pt-2">
@@ -994,7 +1157,7 @@ function Portal({ user, onLogout }) {
                         placeholder="اكتب سبب الاستئذان..."
                         value={permissionReason}
                         onChange={(e) => setPermissionReason(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-blue-500"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs focus:outline-none focus:border-emerald-500"
                       ></textarea>
                     </div>
                     <div className="flex justify-end gap-2 pt-2">
@@ -1025,31 +1188,59 @@ function Portal({ user, onLogout }) {
           <div className="space-y-8">
             <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
               <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <Send size={20} className="text-blue-600" />
-                تقديم التقرير الأسبوعي
+                <Send size={20} className="text-emerald-600" />
+                تقديم تقرير
               </h2>
               <form onSubmit={handleAddReport} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">نوع التقرير</label>
+                    <select
+                      value={repType}
+                      onChange={(e) => setRepType(e.target.value)}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="WEEKLY">تقرير أسبوعي</option>
+                      <option value="FINAL">التقرير النهائي</option>
+                    </select>
+                  </div>
+                  {repType === 'WEEKLY' && (
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">رقم الأسبوع</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="52"
+                        placeholder="مثال: 7"
+                        value={repWeek}
+                        onChange={(e) => setRepWeek(e.target.value)}
+                        className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  )}
+                </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">حدد الأسبوع</label>
-                  <input 
-                    type="text" 
-                    placeholder="مثال: الأسبوع السابع"
-                    value={repWeek}
-                    onChange={(e) => setRepWeek(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-500"
+                  <label className="block text-xs font-medium text-slate-600 mb-1">ملف التقرير (Word أو PDF — اختياري، حتى 10 ميجابايت)</label>
+                  <input
+                    type="file"
+                    accept=".pdf,.doc,.docx"
+                    onChange={(e) => setRepFile(e.target.files[0] || null)}
+                    className="w-full text-xs text-slate-500 file:ml-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">تفاصيل المهام والإنجازات الأسبوعية</label>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">
+                    {repType === 'WEEKLY' ? 'تفاصيل المهام والإنجازات الأسبوعية' : 'ملخص التدريب والإنجازات'}
+                  </label>
                   <textarea 
                     rows="3"
                     placeholder="اكتب بالتفصيل أهم المهام التي قمت بها خلال هذا الأسبوع..."
                     value={repContent}
                     onChange={(e) => setRepContent(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-500"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
                   ></textarea>
                 </div>
-                <button type="submit" disabled={busy} className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-blue-500/20">
+                <button type="submit" disabled={busy} className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-emerald-500/20">
                   إرسال التقرير للمشرف
                 </button>
               </form>
@@ -1064,12 +1255,12 @@ function Portal({ user, onLogout }) {
                 {reports.map((r) => (
                   <div 
                     key={r.id} 
-                    onClick={() => setSelectedReport(r)}
-                    className="p-4 bg-slate-50 hover:bg-blue-50/50 border border-slate-100 hover:border-blue-200 rounded-xl flex justify-between items-center cursor-pointer transition group"
+                    onClick={() => openReport(r)}
+                    className="p-4 bg-slate-50 hover:bg-emerald-50/50 border border-slate-100 hover:border-emerald-200 rounded-xl flex justify-between items-center cursor-pointer transition group"
                   >
                     <div>
                       <div className="flex items-center gap-2">
-                        <h4 className="font-bold text-slate-800 text-sm group-hover:text-blue-600 transition">{r.week}</h4>
+                        <h4 className="font-bold text-slate-800 text-sm group-hover:text-emerald-600 transition">{r.week}</h4>
                         <span className="text-[10px] bg-white border border-slate-200 text-slate-500 px-2 py-0.5 rounded-md flex items-center gap-1">
                           <Eye size={12} /> معاينة التقرير
                         </span>
@@ -1084,12 +1275,35 @@ function Portal({ user, onLogout }) {
               </div>
             </div>
 
+            {providerReports.length > 0 && (
+              <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6">
+                <h3 className="font-bold text-slate-800 text-base mb-4">من جهة التدريب</h3>
+                <div className="space-y-3">
+                  {providerReports.map((r) => (
+                    <div
+                      key={r.id}
+                      className={`p-4 rounded-xl border ${r.type === 'ABSENCE_WARNING' ? 'bg-rose-50/60 border-rose-100' : 'bg-slate-50 border-slate-100'}`}
+                    >
+                      <div className="flex justify-between items-center mb-1">
+                        <h4 className="font-bold text-slate-800 text-sm">{r.title}</h4>
+                        <span className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold ${r.type === 'ABSENCE_WARNING' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                          {PROVIDER_REPORT_AR[r.type]}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 leading-relaxed whitespace-pre-line">{r.content}</p>
+                      <p className="text-[11px] text-slate-400 mt-2">{r.createdAt.slice(0, 10)}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {selectedReport && (
               <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setSelectedReport(null)}>
                 <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl border border-slate-100 space-y-4" onClick={(e) => e.stopPropagation()}>
                   <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                     <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                      <FileText className="text-blue-600" size={20} />
+                      <FileText className="text-emerald-600" size={20} />
                       تفاصيل {selectedReport.week}
                     </h3>
                     <button onClick={() => setSelectedReport(null)} className="text-slate-400 hover:text-slate-600 p-1">
@@ -1104,21 +1318,56 @@ function Portal({ user, onLogout }) {
                     </div>
 
                     <div>
-                      <span className="font-bold text-slate-700 block mb-1">تفاصيل ومحتوى التقرير الأسبوعي:</span>
-                      <p className="bg-slate-50 p-4 rounded-xl leading-relaxed text-slate-700 font-normal">
-                        {selectedReport.content || 'تم رفع إنجازات وتفاصيل هذا الأسبوع بصلب العمل والمهمات الموكلة وفق الخطة التدريبية.'}
-                      </p>
+                      <span className="font-bold text-slate-700 block mb-1">محتوى التقرير:</span>
+                      {selectedReport.rawStatus === 'APPROVED' ? (
+                        <p className="bg-slate-50 p-4 rounded-xl leading-relaxed text-slate-700 font-normal whitespace-pre-line">
+                          {selectedReport.content}
+                        </p>
+                      ) : (
+                        // not approved yet: the student can still edit it (a rejected report goes back for review)
+                        <textarea
+                          rows="5"
+                          value={editContent}
+                          onChange={(e) => setEditContent(e.target.value)}
+                          className="w-full bg-slate-50 p-4 rounded-xl leading-relaxed text-slate-700 border border-slate-200 focus:outline-none focus:border-emerald-500"
+                        />
+                      )}
                     </div>
+
+                    {selectedReport.attachment && (
+                      <button
+                        onClick={() => downloadFile(selectedReport.attachment)}
+                        className="w-full flex items-center justify-between bg-emerald-50 hover:bg-emerald-100 border border-emerald-100 p-3 rounded-xl transition"
+                      >
+                        <span className="flex items-center gap-2 text-emerald-800 font-medium">
+                          <FileText size={16} /> {selectedReport.attachment.originalName}
+                        </span>
+                        <span className="text-emerald-700 font-semibold">تحميل</span>
+                      </button>
+                    )}
 
                     <div className="border-t border-slate-100 pt-3">
                       <span className="font-bold text-slate-700 block mb-1">ملاحظات واعتماد المشرف:</span>
-                      <p className="text-emerald-700 font-medium bg-emerald-50 p-2.5 rounded-xl border border-emerald-100">
+                      <p className={`font-medium p-2.5 rounded-xl border ${
+                        selectedReport.rawStatus === 'REJECTED'
+                          ? 'text-rose-700 bg-rose-50 border-rose-100'
+                          : 'text-emerald-700 bg-emerald-50 border-emerald-100'
+                      }`}>
                         {selectedReport.notes}
                       </p>
                     </div>
                   </div>
 
-                  <div className="pt-2 flex justify-end">
+                  <div className="pt-2 flex justify-end gap-2">
+                    {selectedReport.rawStatus !== 'APPROVED' && (
+                      <button
+                        onClick={handleResubmit}
+                        disabled={busy || !editContent.trim() || editContent.trim() === (selectedReport.content || '').trim()}
+                        className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-medium px-5 py-2 rounded-xl transition"
+                      >
+                        {selectedReport.rawStatus === 'REJECTED' ? 'إعادة الإرسال للمشرف' : 'حفظ التعديل'}
+                      </button>
+                    )}
                     <button 
                       onClick={() => setSelectedReport(null)}
                       className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-medium px-5 py-2 rounded-xl transition"
@@ -1141,7 +1390,7 @@ function Portal({ user, onLogout }) {
                 <h2 className="text-lg font-bold text-slate-800">قائمة المهام التدريبية الموكلة</h2>
                 <p className="text-xs text-slate-500 mt-1">اضغطي على أي بطاقة لعرض كامل تفاصيل المهمة الموكلة.</p>
               </div>
-              <span className="bg-blue-50 text-blue-600 px-4 py-2 rounded-xl text-xs font-bold">
+              <span className="bg-emerald-50 text-emerald-600 px-4 py-2 rounded-xl text-xs font-bold">
                 إجمالي المهام: {tasks.length}
               </span>
             </div>
@@ -1151,7 +1400,7 @@ function Portal({ user, onLogout }) {
                 <div 
                   key={task.id} 
                   onClick={() => setSelectedTask(task)}
-                  className="bg-white p-5 rounded-2xl border border-slate-100 hover:border-blue-300 shadow-sm hover:shadow-md transition cursor-pointer flex flex-col justify-between group"
+                  className="bg-white p-5 rounded-2xl border border-slate-100 hover:border-emerald-300 shadow-sm hover:shadow-md transition cursor-pointer flex flex-col justify-between group"
                 >
                   <div>
                     <div className="flex justify-between items-start mb-3">
@@ -1162,12 +1411,12 @@ function Portal({ user, onLogout }) {
                       </span>
                       <span className="text-xs text-slate-400">{task.date}</span>
                     </div>
-                    <h3 className="font-bold text-slate-800 text-sm mb-2 group-hover:text-blue-600 transition">{task.title}</h3>
+                    <h3 className="font-bold text-slate-800 text-sm mb-2 group-hover:text-emerald-600 transition">{task.title}</h3>
                     <p className="text-slate-500 text-xs line-clamp-2">{task.description}</p>
                   </div>
                   <div className="mt-4 pt-3 border-t border-slate-50 text-xs text-slate-400 flex justify-between items-center">
                     <span>المشرف: {task.supervisor}</span>
-                    <span className="text-blue-600 text-[11px] font-semibold flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                    <span className="text-emerald-600 text-[11px] font-semibold flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
                       <Eye size={12} /> فتح التفاصيل
                     </span>
                   </div>
@@ -1180,7 +1429,7 @@ function Portal({ user, onLogout }) {
                 <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl border border-slate-100 space-y-4" onClick={(e) => e.stopPropagation()}>
                   <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                     <h3 className="font-bold text-slate-800 text-base flex items-center gap-2">
-                      <CheckSquare className="text-blue-600" size={20} />
+                      <CheckSquare className="text-emerald-600" size={20} />
                       تفاصيل المهمة الموكلة
                     </h3>
                     <button onClick={() => setSelectedTask(null)} className="text-slate-400 hover:text-slate-600 p-1">
@@ -1193,7 +1442,7 @@ function Portal({ user, onLogout }) {
                     
                     <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl">
                       <div><span className="text-slate-400 block mb-0.5">تاريخ التسليم:</span><strong>{selectedTask.date}</strong></div>
-                      <div><span className="text-slate-400 block mb-0.5">الحالة:</span><strong className="text-blue-600">{selectedTask.status}</strong></div>
+                      <div><span className="text-slate-400 block mb-0.5">الحالة:</span><strong className="text-emerald-600">{selectedTask.status}</strong></div>
                     </div>
 
                     <div>
@@ -1230,12 +1479,12 @@ function Portal({ user, onLogout }) {
             <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                  <Briefcase size={20} className="text-blue-600" />
+                  <Briefcase size={20} className="text-emerald-600" />
                   طلباتي ({applications.length})
                 </h2>
                 <button
                   onClick={loadAll}
-                  className="text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition"
+                  className="text-xs font-semibold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg transition"
                 >
                   تحديث
                 </button>
@@ -1264,41 +1513,62 @@ function Portal({ user, onLogout }) {
 
             <div>
               <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <Building2 size={20} className="text-blue-600" />
+                <Building2 size={20} className="text-emerald-600" />
                 الفرص التدريبية المتاحة ({opportunities.length})
               </h2>
               {opportunities.length === 0 && (
                 <p className="text-xs text-slate-400">لا توجد فرص تدريبية مفتوحة حالياً.</p>
               )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {opportunities.map((o) => (
-                  <div key={o.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between">
-                    <div>
-                      <div className="flex justify-between items-start mb-2">
-                        <span className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg">
-                          {o.organization?.name}
-                        </span>
-                        <span className="text-xs text-slate-400">المقاعد: {o.seats}</span>
+                {opportunities.map((o) => {
+                  const today = new Date().toISOString().slice(0, 10);
+                  const deadlinePassed = o.deadline && o.deadline.slice(0, 10) < today;
+                  const full = o.seatsAvailable === 0;
+                  const applied = appliedIds.has(o.id);
+                  const hasActiveTraining = assignment?.status === 'ACTIVE';
+                  const blocked = applied || deadlinePassed || full || hasActiveTraining;
+                  const label = applied ? 'تم التقديم ✅'
+                    : hasActiveTraining ? 'لديك تدريب جارٍ'
+                    : deadlinePassed ? 'انتهى موعد التقديم'
+                    : full ? 'اكتملت المقاعد'
+                    : 'تقديم طلب';
+                  return (
+                    <div key={o.id} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between">
+                      <div>
+                        <div className="flex justify-between items-start mb-2 gap-2">
+                          <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-lg">
+                            {o.organization?.name}
+                          </span>
+                          <span className="text-xs text-slate-400 whitespace-nowrap">
+                            {OPP_TYPE_AR[o.type] || ''} — المقاعد الشاغرة: {o.seatsAvailable ?? o.seats} / {o.seats}
+                          </span>
+                        </div>
+                        <h3 className="font-bold text-slate-800 text-base mb-2">{o.title}</h3>
+                        <p className="text-slate-500 text-xs leading-relaxed">{o.description}</p>
+                        <ul className="text-[11px] text-slate-500 mt-3 space-y-1">
+                          <li>🗓️ من {o.startDate.slice(0, 10)} إلى {o.endDate.slice(0, 10)}</li>
+                          {o.deadline && (
+                            <li className={deadlinePassed ? 'text-rose-500' : ''}>⏰ آخر موعد للتقديم: {o.deadline.slice(0, 10)}</li>
+                          )}
+                          {o.location && <li>📍 {o.location}</li>}
+                          {o.target && <li>👥 الفئة المستهدفة: {o.target}</li>}
+                          {o.requirements && <li>📋 المتطلبات: {o.requirements}</li>}
+                        </ul>
                       </div>
-                      <h3 className="font-bold text-slate-800 text-base mb-2">{o.title}</h3>
-                      <p className="text-slate-500 text-xs leading-relaxed">{o.description}</p>
-                      <p className="text-[11px] text-slate-400 mt-3">
-                        من {o.startDate.slice(0, 10)} إلى {o.endDate.slice(0, 10)}
-                      </p>
+                      <button
+                        onClick={() => handleApply(o.id)}
+                        disabled={busy || blocked}
+                        className={`mt-4 font-medium px-5 py-2.5 rounded-xl text-sm transition ${
+                          blocked
+                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg shadow-emerald-500/20'
+                        }`}
+                      >
+                        {label}
+                      </button>
                     </div>
-                    <button
-                      onClick={() => handleApply(o.id)}
-                      disabled={busy || appliedIds.has(o.id)}
-                      className={`mt-4 font-medium px-5 py-2.5 rounded-xl text-sm transition ${
-                        appliedIds.has(o.id)
-                          ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                          : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'
-                      }`}
-                    >
-                      {appliedIds.has(o.id) ? 'تم التقديم ✅' : 'تقديم طلب'}
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1312,7 +1582,7 @@ function Portal({ user, onLogout }) {
               <div className="flex items-center gap-3">
                 <span className="text-xs text-slate-400">غير المقروءة: {unreadCount}</span>
                 {unreadCount > 0 && (
-                  <button onClick={handleMarkAllRead} className="text-xs text-blue-600 font-semibold underline">
+                  <button onClick={handleMarkAllRead} className="text-xs text-emerald-600 font-semibold underline">
                     تعليم الكل كمقروء
                   </button>
                 )}
@@ -1330,7 +1600,7 @@ function Portal({ user, onLogout }) {
                 className={`p-4 border rounded-xl flex items-start gap-3 cursor-pointer transition ${
                   n.isRead
                     ? 'bg-slate-50 border-slate-100 hover:bg-slate-100'
-                    : 'bg-blue-50/50 border-blue-100 hover:bg-blue-100/60'
+                    : 'bg-emerald-50/50 border-emerald-100 hover:bg-emerald-100/60'
                 }`}
               >
                 <span className="text-lg mt-0.5">{n.isRead ? '🔔' : '📌'}</span>
@@ -1361,7 +1631,7 @@ function Portal({ user, onLogout }) {
                 <div><span className="text-slate-400 block mb-0.5">فترة التدريب</span><strong>{letter.startDate} → {letter.endDate}</strong></div>
               </div>
               <div className="no-print pt-2 flex justify-end gap-2">
-                <button onClick={() => window.print()} className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-5 py-2 rounded-xl transition flex items-center gap-1">
+                <button onClick={() => window.print()} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium px-5 py-2 rounded-xl transition flex items-center gap-1">
                   <Printer size={14} /> طباعة
                 </button>
                 <button onClick={() => setLetter(null)} className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-medium px-5 py-2 rounded-xl transition">
@@ -1372,7 +1642,7 @@ function Portal({ user, onLogout }) {
           </div>
         )}
 
-
+        </div>
       </main>
     </div>
   );

@@ -32,7 +32,7 @@ export default function Login({ onLogin }) {
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
       <div className="bg-white w-full max-w-md rounded-2xl border border-slate-100 shadow-sm p-8">
         <div className="flex items-center gap-3 mb-6">
-          <div className="bg-blue-600 text-white p-2.5 rounded-xl font-bold text-xl shadow-lg shadow-blue-500/20">ط</div>
+          <div className="bg-emerald-600 text-white p-2.5 rounded-xl font-bold text-xl shadow-lg shadow-emerald-500/20">ط</div>
           <div>
             <h1 className="font-bold text-slate-800 text-lg">بوابة الطالب</h1>
             <p className="text-xs text-slate-400">التدريب التعاوني</p>
@@ -49,7 +49,7 @@ export default function Login({ onLogin }) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="student@coop.test"
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-500"
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
             />
           </div>
           <div>
@@ -60,7 +60,7 @@ export default function Login({ onLogin }) {
               dir="ltr"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-blue-500"
+              className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:border-emerald-500"
             />
           </div>
 
@@ -71,7 +71,7 @@ export default function Login({ onLogin }) {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2"
+            className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-medium px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2"
           >
             <LogIn size={18} />
             {loading ? 'جاري تسجيل الدخول...' : 'تسجيل الدخول'}

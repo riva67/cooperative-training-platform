@@ -103,6 +103,24 @@ export const api = {
   // reports
   reports: () => request('GET', '/reports?limit=100'),
   submitReport: (data) => request('POST', '/reports', { body: data }),
+  // edit a SUBMITTED report, or fix a REJECTED one -> it goes back to the supervisor for review
+  updateReport: (id, data) => request('PATCH', `/reports/${id}`, { body: data }),
+
+  // after the training: final grade (404 until the academic supervisor sets it) and post-training employment
+  finalGrade: (assignmentId) => request('GET', `/final-grades/${assignmentId}`),
+  recordEmployment: (assignmentId, data) => request('PATCH', `/assignments/${assignmentId}/employment`, { body: data }),
+
+  // download a file (report / message attachment) with the login token, then save it
+  downloadAttachment: async (id, fileName) => {
+    const res = await fetch(`${API_URL}/attachments/${id}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+    if (!res.ok) throw new ApiError(res.status, 'تعذر تحميل الملف');
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName || 'file';
+    a.click();
+    URL.revokeObjectURL(url);
+  },
 
   // notifications
   notifications: () => request('GET', '/notifications?limit=50'),
