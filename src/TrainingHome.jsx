@@ -364,7 +364,7 @@ function PartnerCard({ p }) {
 const PORTAL_URLS = {
   STUDENT: import.meta.env.VITE_STUDENT_PORTAL_URL || "http://localhost:5173",
   ORG_SUPERVISOR: import.meta.env.VITE_PROVIDER_PORTAL_URL || "http://localhost:5175",
-  ACADEMIC_SUPERVISOR: import.meta.env.VITE_SUPERVISOR_PORTAL_URL,
+  ACADEMIC_SUPERVISOR: import.meta.env.VITE_SUPERVISOR_PORTAL_URL || "http://localhost:5177",
   ADMIN: import.meta.env.VITE_ADMIN_PORTAL_URL || "http://localhost:5176",
 };
 
