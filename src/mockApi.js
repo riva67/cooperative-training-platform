@@ -294,6 +294,9 @@ export const api = {
   nominate: (applicationId) => {
     const a = db.applications.find((x) => x.id === applicationId);
     if (!a) return fail(404, 'Application not found');
+    // same checks, in the same order, as the backend (applications.controller.js)
+    if (a.status === 'APPROVED' || a.status === 'REJECTED') return fail(400, `This application is already ${a.status} and cannot be changed`);
+    if (a.status === 'NOMINATED') return fail(400, 'Application is already NOMINATED');
     if (a.status !== 'PENDING') return fail(400, 'Only PENDING applications can be nominated');
     const opp = db.opportunities.find((o) => o.id === a.opportunityId);
     if (opp.status !== 'OPEN') return fail(400, 'This opportunity is closed');

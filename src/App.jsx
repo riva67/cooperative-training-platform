@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-// Temporary data layer with the same functions / shapes / rules as the backend.
-// To connect: replace "./mockApi" with "./api" (real fetch calls). Nothing else in this file changes.
-import { api, STUDENT_REQUEST_SUBJECTS } from "./mockApi";
+// Connected to the backend. (src/mockApi.js has the same functions with demo data, for working without the server.)
+import {
+  api, STUDENT_REQUEST_SUBJECTS, MAIN_PORTAL_URL, getToken, saveSession, clearSession, consumeHashSession,
+} from "./api";
 
 // ───────────── labels (backend values -> Arabic) ─────────────
 const APP_STATUS = {
@@ -46,11 +47,19 @@ const ERRORS_AR = {
   "This trainee has not been evaluated yet": "لم تقيّم جهة التدريب المتدرب بعد.",
   "You cannot message this user": "لا يمكنك مراسلة هذا المستخدم.",
   "Invalid email or password": "البريد الإلكتروني أو كلمة المرور غير صحيحة.",
+  "Your account is not active yet. If you just registered, please wait for the administration to approve it.":
+    "حسابك قيد المراجعة. ستتمكن من الدخول بعد موافقة إدارة النظام.",
+  "Your registration request was rejected by the administration.": "تم رفض طلب التسجيل من إدارة النظام.",
+  "Your account has been disabled. Please contact the administration.": "تم إيقاف حسابك. يرجى التواصل مع إدارة النظام.",
 };
-const errorAr = (err) =>
-  ERRORS_AR[err.message] ||
-  (err.message?.startsWith("Only SUBMITTED reports") ? "تمت مراجعة هذا التقرير مسبقاً." : err.message) ||
-  "حدث خطأ غير متوقع";
+const errorAr = (err) => {
+  const m = err.message || "";
+  if (ERRORS_AR[m]) return ERRORS_AR[m];
+  if (m.startsWith("Only SUBMITTED reports")) return "تمت مراجعة هذا التقرير مسبقاً.";
+  if (m.startsWith("This application is already")) return "تم البت في هذا الطلب من جهة التدريب ولا يمكن تغييره.";
+  if (m.startsWith("Application is already")) return "هذا الطلب مرشّح مسبقاً.";
+  return m || "حدث خطأ غير متوقع";
+};
 
 const ymd = (d) => (d ? String(d).slice(0, 10) : "");
 const fmtDateTime = (d) =>
@@ -70,8 +79,12 @@ const NAV_ITEMS = [
 export default function App() {
   // ── session (after connecting, it comes from the main portal like the other portals) ──
   const [me, setMe] = useState(null);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [loginEmail, setLoginEmail] = useState("academic@coop.test");
+  // session sent by the main portal (#session=...) or saved from a previous visit
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    consumeHashSession();
+    return Boolean(getToken());
+  });
+  const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [authNotice, setAuthNotice] = useState("");
 
@@ -182,8 +195,23 @@ export default function App() {
   }, [isLoggedIn, loadAll]);
 
   useEffect(() => {
-    api.criteria().then((c) => setCriteria(c.criteria));
+    if (isLoggedIn) api.criteria().then((c) => setCriteria(c.criteria)).catch(() => {});
+  }, [isLoggedIn]);
+
+  // expired session -> back to the login screen
+  useEffect(() => {
+    const onExpired = () => {
+      setIsLoggedIn(false);
+      setAuthNotice("انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى.");
+    };
+    window.addEventListener("session-expired", onExpired);
+    return () => window.removeEventListener("session-expired", onExpired);
   }, []);
+
+  const logout = () => {
+    clearSession();
+    window.location.href = MAIN_PORTAL_URL;
+  };
 
   // default selections once the trainees are loaded
   useEffect(() => {
@@ -275,11 +303,13 @@ export default function App() {
     setAuthNotice("");
     api
       .login(loginEmail, loginPassword)
-      .then(({ user }) => {
+      .then(({ token, user }) => {
         if (user.role !== "ACADEMIC_SUPERVISOR") {
-          setAuthNotice("هذه البوابة مخصصة للمشرفين الأكاديميين.");
+          setAuthNotice("هذه البوابة مخصصة للمشرفين الأكاديميين. استخدم البوابة الرئيسية للدخول إلى بوابتك.");
           return;
         }
+        saveSession(token, user);
+        setLoginPassword("");
         setIsLoggedIn(true);
         notify(`تم تسجيل الدخول باسم ${user.name}`);
       })
@@ -446,10 +476,7 @@ export default function App() {
           {isLoggedIn && (
             <button
               type="button"
-              onClick={() => {
-                setIsLoggedIn(false);
-                setLoginPassword("");
-              }}
+              onClick={logout}
               className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
             >
               تسجيل الخروج
@@ -514,7 +541,7 @@ export default function App() {
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-lg font-bold text-slate-900">تسجيل دخول المشرف الأكاديمي</h2>
             <p className="mt-1 text-sm text-slate-600">
-              بعد الربط يتم الدخول من البوابة الرئيسية مباشرة. للتجربة: academic@coop.test / Password123!
+              يمكنك الدخول من البوابة الرئيسية مباشرة، أو بحسابك هنا.
             </p>
 
             {authNotice && (
