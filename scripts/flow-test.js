@@ -76,6 +76,9 @@ async function main() {
     check('student applies (201, PENDING)', r.status === 201 && r.data.status === 'PENDING', show(r));
     const applicationId = r.data?.id;
 
+    r = await api('GET', '/notifications?unread=true&limit=100', { token: t.academic });
+    check('academic supervisor is notified of the application', r.status === 200 && r.data.items.some((n) => n.message.includes('Flow test opportunity')), show(r));
+
     r = await api('POST', '/applications', { token: t.student, body: { opportunityId } });
     check('applying twice is rejected (409)', r.status === 409, show(r));
 

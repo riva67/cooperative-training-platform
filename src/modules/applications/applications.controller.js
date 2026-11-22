@@ -65,6 +65,13 @@ const createApplication = asyncHandler(async (req, res) => {
   await logAction(req.user.id, 'APPLICATION_CREATED', 'Application', created.id, { opportunityId });
   const orgUsers = await orgSupervisorUserIds(opportunity.organizationId);
   await Promise.all(orgUsers.map((uid) => notify(uid, `New application from ${req.user.name} for "${opportunity.title}"`)));
+  // academic supervisors nominate the applicants, so they are notified too
+  const academics = await userIdsByRole('ACADEMIC_SUPERVISOR');
+  await Promise.all(
+    academics.map((uid) =>
+      notify(uid, `${req.user.name} applied to "${opportunity.title}" at ${opportunity.organization.name}. Waiting for nomination.`)
+    )
+  );
 
   res.status(201).json(created);
 });
