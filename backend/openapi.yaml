@@ -1,0 +1,2474 @@
+openapi: 3.0.3
+info:
+  title: Cooperative Training Platform API
+  version: 1.0.0
+  description: |
+    Backend API contract for the Cooperative Training Management Platform (project #45).
+
+    **Base URL (local):** `http://localhost:4000`
+
+    **Authentication:** call `POST /auth/login`, copy the `token`, then click **Authorize** and paste it.
+    Every other endpoint (except `/health`, `/auth/register` and `/auth/login`) needs the header `Authorization: Bearer <token>`.
+
+    **Roles:** `STUDENT`, `ACADEMIC_SUPERVISOR`, `ORG_SUPERVISOR`, `ADMIN`. ADMIN can access everything.
+
+    **Status labels** in each endpoint description:
+    - ✅ **Implemented**: already working in the backend.
+
+    **Errors** always look like `{ "error": "message" }`. Validation errors (400) also include `details`.
+    A refused login of an account that is not active also includes `code`: `PENDING`, `REJECTED` (+ `reason`) or `SUSPENDED`.
+
+    **Account approval:** students are active immediately after `POST /auth/register`. Academic supervisors and
+    training providers are created with `status: PENDING` and cannot log in until an admin approves them
+    (`PATCH /users/{id}/active` with `isActive: true`) or rejects them (`POST /users/{id}/reject`).
+
+    **Test accounts** (password for all: `Password123!`): `admin@coop.test`, `student@coop.test`, `academic@coop.test`, `company@coop.test`.
+servers:
+  - url: http://localhost:4000
+    description: Local development
+tags:
+  - name: Auth
+    description: Login and current user
+  - name: Users
+    description: Account and permissions management (admin only)
+  - name: Organizations
+    description: Training organizations (جهات التدريب) and their type (PRIVATE / EDUCATIONAL / GOVERNMENT)
+  - name: Opportunities
+    description: Training opportunities posted by organizations
+  - name: Applications
+    description: Student applications and nomination/approval flow
+  - name: Assignments
+    description: A confirmed training placement linking student, organization and supervisors
+  - name: Attendance
+    description: Student check-in / check-out
+  - name: Reports
+    description: Training reports and approval reports
+  - name: Supervision
+    description: Academic supervisor monitoring, notes, evaluations, final grade
+  - name: Visits
+    description: Field visits booked by the academic supervisor and approved by the training organization
+  - name: Messages
+    description: Chat and email-style messages with attachments between supervisors, students and organizations
+  - name: Notifications
+    description: In-app notifications
+  - name: Statistics
+    description: Impact indicators for dashboards
+  - name: System
+    description: Health check and audit logs
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Create an account (sign-up form)
+      description: |
+        ✅ **Implemented**. Public. Rate-limited per IP.
+        - `STUDENT`: active immediately; the response contains a `token`.
+        - `ACADEMIC_SUPERVISOR` (مشرف) and `ORG_SUPERVISOR` (جهة تدريبية): created with `status: PENDING`, no token.
+          They can log in after an admin approves them. If `SUPERVISOR_EMAIL_DOMAIN` is set in `.env`, academic supervisors
+          must use that e-mail domain.
+        - `ADMIN` can never self-register.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  title: Student
+                  required: [role, name, email, password, universityId]
+                  properties:
+                    role: { type: string, enum: [STUDENT] }
+                    name: { type: string }
+                    email: { type: string, format: email }
+                    phone: { type: string }
+                    password: { type: string, minLength: 8 }
+                    universityId: { type: string, example: '446300179' }
+                    major: { type: string }
+                - type: object
+                  title: Academic supervisor (مشرف)
+                  required: [role, name, email, password, department]
+                  properties:
+                    role: { type: string, enum: [ACADEMIC_SUPERVISOR] }
+                    name: { type: string, description: الاسم الكامل }
+                    department: { type: string, description: الكلية / القسم }
+                    email: { type: string, format: email }
+                    phone: { type: string, description: رقم الجوال }
+                    password: { type: string, minLength: 8 }
+                - type: object
+                  title: Training provider (جهة تدريبية)
+                  required: [role, name, email, password, organizationName, organizationType]
+                  properties:
+                    role: { type: string, enum: [ORG_SUPERVISOR] }
+                    name: { type: string }
+                    email: { type: string, format: email }
+                    phone: { type: string }
+                    password: { type: string, minLength: 8 }
+                    organizationName: { type: string }
+                    organizationType: { $ref: '#/components/schemas/OrganizationType' }
+                    organizationSubtype: { type: string, description: "Second dropdown (شركة، مصنع، جامعة أهلية، وزارة ...), stored in Organization.sector" }
+                    crNumber: { type: string, description: "Commercial registration number; optional (government and educational bodies have none). Must be unique." }
+                    position: { type: string }
+      responses:
+        '201':
+          description: Created. `pending` tells the frontend whether to show "waiting for approval" or log the user in.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pending: { type: boolean }
+                  token: { type: string, description: Only when pending is false }
+                  message: { type: string, description: Only when pending is true }
+                  user: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Email, university ID or CR number already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Too many sign-up attempts
+
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      description: "✅ **Implemented**. Public."
+      security: []
+      responses:
+        '200':
+          description: Server is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  time: { type: string, format: date-time }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in
+      description: "✅ **Implemented**. Public. Returns a JWT valid for 1 day. Rate-limited per IP (429 after too many attempts)."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: admin@coop.test }
+                password: { type: string, example: Password123! }
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user:
+                    $ref: '#/components/schemas/AuthUser'
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429':
+          description: Too many login attempts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Wrong email/password
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Correct password but the account is not active
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  code: { type: string, enum: [PENDING, REJECTED, SUSPENDED] }
+                  reason: { type: string, nullable: true, description: Rejection reason (REJECTED only) }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user with role profile
+      description: "✅ **Implemented**. Any logged-in user. Only the profile matching the user's role is non-null."
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/AuthUser'
+                  - type: object
+                    properties:
+                      createdAt: { type: string, format: date-time }
+                      phone: { type: string, nullable: true }
+                      student:
+                        allOf: [{ $ref: '#/components/schemas/StudentProfile' }]
+                        nullable: true
+                      academicSupervisor:
+                        allOf: [{ $ref: '#/components/schemas/AcademicSupervisorProfile' }]
+                        nullable: true
+                      orgSupervisor:
+                        allOf: [{ $ref: '#/components/schemas/OrgSupervisorProfile' }]
+                        nullable: true
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/password:
+    patch:
+      tags: [Auth]
+      summary: Change my password
+      description: "✅ **Implemented**. Any logged-in user."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Password updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string, example: Password updated }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/profile:
+    patch:
+      tags: [Auth]
+      summary: Update my name / phone
+      description: "✅ **Implemented**. Any logged-in user. The phone number is shown in the field-visits table."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 2 }
+                phone: { type: string, example: '+966 55 123 4567', description: "Digits, spaces, + and - only (5–20 chars)" }
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+                  name: { type: string }
+                  email: { type: string }
+                  phone: { type: string, nullable: true }
+                  role: { $ref: '#/components/schemas/Role' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users:
+    post:
+      tags: [Users]
+      summary: Create an account
+      description: |
+        ✅ **Implemented**. **ADMIN only.**
+        Required extra fields by role: `STUDENT` needs `universityId`; `ORG_SUPERVISOR` needs `organizationId`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateUserRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Email or university ID already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Users]
+      summary: List users
+      description: "✅ **Implemented**. **ADMIN only.**"
+      parameters:
+        - name: role
+          in: query
+          schema: { $ref: '#/components/schemas/Role' }
+        - name: search
+          in: query
+          description: Matches name or email (case-insensitive)
+          schema: { type: string }
+        - name: status
+          in: query
+          description: "`PENDING` = registration requests waiting for approval"
+          schema: { $ref: '#/components/schemas/AccountStatus' }
+        - name: isActive
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/{id}:
+    get:
+      tags: [Users]
+      summary: Get one user with profile
+      description: "✅ **Implemented**. **ADMIN only.**"
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: User
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/role:
+    patch:
+      tags: [Users]
+      summary: Change a user's role (permissions management)
+      description: "✅ **Implemented**. **ADMIN only.** You cannot change your own role. Changing to STUDENT or ORG_SUPERVISOR requires the user to already have that profile (400 otherwise); an academic-supervisor profile is created automatically."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: '#/components/schemas/Role' }
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/active:
+    patch:
+      tags: [Users]
+      summary: Approve / enable or disable an account
+      description: "✅ **Implemented**. **ADMIN only.** `isActive: true` approves a PENDING request (status ACTIVE); `false` disables (status SUSPENDED). You cannot disable your own account."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [isActive]
+              properties:
+                isActive: { type: boolean }
+      responses:
+        '200':
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/reject:
+    post:
+      tags: [Users]
+      summary: Reject a registration request
+      description: "✅ **Implemented**. **ADMIN only.** Only for PENDING academic-supervisor / training-provider requests. A provider's CR number is released."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200':
+          description: Rejected user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /organizations:
+    get:
+      tags: [Organizations]
+      summary: List organizations
+      description: "✅ **Implemented**. Any logged-in user."
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/OrganizationType' }
+        - name: search
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated organizations (with `_count.opportunities` and `_count.supervisors`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Organization' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Organizations]
+      summary: Create an organization
+      description: "✅ **Implemented**. **ADMIN only.** Then add supervisors with `POST /users` (role ORG_SUPERVISOR + organizationId)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrganizationInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Organization' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: CR number already exists
+
+  /organizations/{id}:
+    get:
+      tags: [Organizations]
+      summary: Get one organization with its active supervisors
+      description: "✅ **Implemented**. Any logged-in user."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Organization' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Organizations]
+      summary: Update an organization
+      description: "✅ **Implemented**. **ADMIN, or an ORG_SUPERVISOR of that organization** (the CR number can only be changed by ADMIN). Send only the fields to change."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OrganizationInput' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Organization' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /opportunities:
+    get:
+      tags: [Opportunities]
+      summary: List training opportunities
+      description: "✅ **Implemented**. Any logged-in user."
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/OpportunityStatus' }
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/OpportunityType' }
+        - name: organizationId
+          in: query
+          schema: { type: integer }
+        - name: organizationType
+          in: query
+          description: Only opportunities of PRIVATE / EDUCATIONAL / GOVERNMENT organizations
+          schema: { $ref: '#/components/schemas/OrganizationType' }
+        - name: mine
+          in: query
+          description: "ORG_SUPERVISOR only: `true` = only my organization's opportunities"
+          schema: { type: string, enum: ['true', 'false'] }
+        - name: search
+          in: query
+          description: Matches title or description
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated opportunities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Opportunity' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Opportunities]
+      summary: Create an opportunity
+      description: |
+        ✅ **Implemented**. **ORG_SUPERVISOR or ADMIN.**
+        For an ORG_SUPERVISOR the organization is taken from their profile. ADMIN must send `organizationId`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateOpportunityRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Opportunity' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /opportunities/summary:
+    get:
+      tags: [Opportunities]
+      summary: Seats overview of my organization (المقاعد التدريبية)
+      description: "✅ **Implemented**. **ORG_SUPERVISOR** (own organization) or ADMIN (all). Seat numbers count OPEN opportunities; a seat is taken by each APPROVED application."
+      responses:
+        '200':
+          description: Totals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  opportunities: { type: integer }
+                  openOpportunities: { type: integer }
+                  totalSeats: { type: integer }
+                  seatsTaken: { type: integer }
+                  seatsAvailable: { type: integer }
+                  applications: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /opportunities/{id}:
+    get:
+      tags: [Opportunities]
+      summary: Get one opportunity
+      description: "✅ **Implemented**. Any logged-in user."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Opportunity with organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Opportunity' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Opportunities]
+      summary: Update or close an opportunity
+      description: "✅ **Implemented**. **ORG_SUPERVISOR (own organization) or ADMIN.** Send only the fields to change."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                type: { $ref: '#/components/schemas/OpportunityType' }
+                seats: { type: integer, minimum: 1, description: Cannot be lower than the students already approved }
+                startDate: { type: string, format: date }
+                endDate: { type: string, format: date }
+                deadline: { type: string, format: date, nullable: true }
+                location: { type: string, nullable: true }
+                target: { type: string, nullable: true }
+                requirements: { type: string, nullable: true }
+                status: { $ref: '#/components/schemas/OpportunityStatus' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Opportunity' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    delete:
+      tags: [Opportunities]
+      summary: Delete an opportunity
+      description: "✅ **Implemented**. **ORG_SUPERVISOR (own organization) or ADMIN.** Only while nobody has applied; otherwise 409 — close it with `PATCH status=CLOSED` instead."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204':
+          description: Deleted
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Students already applied
+
+  /applications:
+    post:
+      tags: [Applications]
+      summary: Apply to an opportunity
+      description: |
+        ✅ **Implemented**. **STUDENT only.**
+        Returns 409 if the student already applied, and 400 if the opportunity is closed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [opportunityId]
+              properties:
+                opportunityId: { type: integer, example: 1 }
+      responses:
+        '201':
+          description: Application created with status PENDING
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Already applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Applications]
+      summary: List applications
+      description: |
+        ✅ **Implemented**. Results depend on the role:
+        STUDENT sees their own; ORG_SUPERVISOR sees applications to their organization; ACADEMIC_SUPERVISOR and ADMIN see all.
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ApplicationStatus' }
+        - name: opportunityId
+          in: query
+          schema: { type: integer }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated applications (each includes `student` and `opportunity`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Application' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /applications/{id}/status:
+    patch:
+      tags: [Applications]
+      summary: Nominate, approve or reject an application
+      description: |
+        ✅ **Implemented**. Flow: `PENDING → NOMINATED` (ACADEMIC_SUPERVISOR) `→ APPROVED / REJECTED` (ORG_SUPERVISOR). ADMIN can do any step.
+        The student receives a notification on every change.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [NOMINATED, APPROVED, REJECTED]
+      responses:
+        '200':
+          description: Updated application
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Application' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assignments:
+    post:
+      tags: [Assignments]
+      summary: Create an assignment from an approved application
+      description: |
+        ✅ **Implemented**. **ADMIN only.**
+        Links the student with an academic supervisor and an organization supervisor. Dates are copied from the opportunity.
+        Rules: the application must be `APPROVED` (400); the organization supervisor must belong to the opportunity's organization (400);
+        the student must not already have an ACTIVE assignment (409); the opportunity must have a free seat (409).
+        The student and both supervisors are notified. Attendance, reports, notes, evaluations and the final grade all hang off the assignment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [applicationId, academicSupervisorId, orgSupervisorId]
+              properties:
+                applicationId: { type: integer }
+                academicSupervisorId: { type: integer, description: "ID from the academic supervisor profile (not the user ID)" }
+                orgSupervisorId: { type: integer, description: "ID from the organization supervisor profile (not the user ID)" }
+                semester: { type: string, example: الفصل الأول, description: "Printed on the evaluation form" }
+                academicYear: { type: string, example: '1448', description: "Printed on the evaluation form" }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Assignment' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Student already has an active assignment, or no seats left
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Assignments]
+      summary: List assignments
+      description: |
+        ✅ **Implemented**. STUDENT sees their own; supervisors see the ones they supervise; ADMIN sees all.
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/AssignmentStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated assignments
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Assignment' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /assignments/{id}:
+    get:
+      tags: [Assignments]
+      summary: Get one assignment
+      description: "✅ **Implemented**. Only the student, their supervisors, or ADMIN."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Assignment with student, opportunity and supervisors
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Assignment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assignments/{id}/status:
+    patch:
+      tags: [Assignments]
+      summary: Complete or cancel an assignment
+      description: "✅ **Implemented**. **ADMIN only.** Only an ACTIVE assignment can be changed (to COMPLETED or CANCELLED). The student is notified."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/AssignmentStatus' }
+      responses:
+        '200':
+          description: Updated assignment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Assignment' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assignments/{id}/commencement:
+    get:
+      tags: [Assignments]
+      summary: Form (1) — trainee commencement (نموذج مباشرة المتدرب)
+      description: "✅ **Implemented**. Anyone who can see the assignment. The date is filled automatically on the trainee's first check-in."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Form data to render / print
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title: { type: string }
+                  semester: { type: string, nullable: true }
+                  academicYear: { type: string, nullable: true }
+                  organization: { type: object, properties: { id: { type: integer }, name: { type: string } } }
+                  trainee: { type: object, properties: { name: { type: string }, universityId: { type: string }, major: { type: string, nullable: true } } }
+                  fieldSupervisor: { type: object, properties: { name: { type: string }, position: { type: string, nullable: true } } }
+                  commencementDate: { type: string, format: date, nullable: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Assignments]
+      summary: Confirm / correct the commencement date
+      description: "✅ **Implemented**. **ORG_SUPERVISOR of the trainee** or ADMIN. The academic supervisor is notified."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commencementDate]
+              properties:
+                commencementDate: { type: string, format: date }
+      responses:
+        '200':
+          description: Updated assignment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Assignment' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assignments/{id}/employment:
+    patch:
+      tags: [Assignments]
+      summary: Record post-training employment (impact indicator)
+      description: "✅ **Implemented**. **STUDENT (own), ACADEMIC_SUPERVISOR (their trainee) or ADMIN**, after the assignment is COMPLETED."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [employed]
+              properties:
+                employed: { type: boolean }
+                employerName: { type: string, description: Required when employed is true }
+      responses:
+        '200':
+          description: Updated assignment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Assignment' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /opportunities/{id}/applicants:
+    get:
+      tags: [Applications]
+      summary: Applicants of one opportunity, sorted by GPA
+      description: "✅ **Implemented**. **ACADEMIC_SUPERVISOR, ORG_SUPERVISOR (own organization) or ADMIN.** Highest GPA first; students without a GPA come last."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ApplicationStatus' }
+      responses:
+        '200':
+          description: Applications with student (and user name/email)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  opportunityId: { type: integer }
+                  count: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Application' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assignments/{id}/letter:
+    get:
+      tags: [Assignments]
+      summary: Data for the official training letter (خطاب التدريب)
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN. Returns the letter text and fields for the frontend to render or print."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Letter data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title: { type: string }
+                  issuedDate: { type: string, format: date }
+                  university: { type: string }
+                  companyName: { type: string }
+                  studentName: { type: string }
+                  universityId: { type: string }
+                  major: { type: string, nullable: true }
+                  trainingTitle: { type: string }
+                  startDate: { type: string, format: date }
+                  endDate: { type: string, format: date }
+                  content: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /attendance/check-in:
+    post:
+      tags: [Attendance]
+      summary: Check in for today
+      description: "✅ **Implemented**. **STUDENT only**, on their own ACTIVE assignment. One record per day (409 if already checked in)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignmentId]
+              properties:
+                assignmentId: { type: integer }
+      responses:
+        '201':
+          description: Attendance record created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attendance' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Already checked in today
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /attendance/check-out:
+    post:
+      tags: [Attendance]
+      summary: Check out for today
+      description: "✅ **Implemented**. **STUDENT only.** Requires an existing check-in for today."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignmentId]
+              properties:
+                assignmentId: { type: integer }
+      responses:
+        '200':
+          description: "Attendance record updated with checkOut time. If the student leaves before 5 working hours (MIN_WORK_HOURS) the response also has a `warning` message; the check-out is still recorded."
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Attendance'
+                  - type: object
+                    properties:
+                      warning: { type: string, example: "تنبيه: تم تسجيل الانصراف قبل إتمام 5 ساعات عمل" }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /attendance/{id}:
+    patch:
+      tags: [Attendance]
+      summary: Correct an attendance status
+      description: "✅ **Implemented**. **ORG_SUPERVISOR (their trainee) or ADMIN**, e.g. mark LATE or EXCUSED."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { $ref: '#/components/schemas/AttendanceStatus' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attendance' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /attendance/mark:
+    post:
+      tags: [Attendance]
+      summary: Record a day for a trainee
+      description: "✅ **Implemented**. **ORG_SUPERVISOR of the trainee** or ADMIN, e.g. ABSENT when the trainee never checked in. Date must be inside the training period and not in the future. Creates or updates the day."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignmentId, date, status]
+              properties:
+                assignmentId: { type: integer }
+                date: { type: string, format: date }
+                status: { $ref: '#/components/schemas/AttendanceStatus' }
+      responses:
+        '201':
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attendance' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /assignments/{id}/attendance:
+    get:
+      tags: [Attendance]
+      summary: Attendance records of an assignment
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN. Newest first."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Records plus a summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Attendance' }
+                  summary:
+                    type: object
+                    properties:
+                      present: { type: integer }
+                      absent: { type: integer }
+                      late: { type: integer }
+                      excused: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /reports:
+    post:
+      tags: [Reports]
+      summary: Submit a report
+      description: "✅ **Implemented**. STUDENT submits `WEEKLY`/`FINAL` reports; the training provider (ORG_SUPERVISOR) submits `APPROVAL`, `ABSENCE_WARNING` (إنذار غياب) or `VISIT` (تقرير زيارة). To attach a Word/PDF file, upload it first with `POST /attachments` and send its `attachmentId`. Status starts as SUBMITTED."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignmentId, type, title, content]
+              properties:
+                assignmentId: { type: integer }
+                type: { $ref: '#/components/schemas/ReportType' }
+                title: { type: string, example: Week 3 report }
+                content: { type: string }
+                weekNumber: { type: integer, minimum: 1, maximum: 52, description: WEEKLY only }
+                attachmentId: { type: integer, description: A file you uploaded with POST /attachments }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [Reports]
+      summary: List reports
+      description: "✅ **Implemented**. Scoped by role like assignments."
+      parameters:
+        - name: assignmentId
+          in: query
+          schema: { type: integer }
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/ReportType' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ReportStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated reports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Report' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /reports/{id}:
+    get:
+      tags: [Reports]
+      summary: Get one report
+      description: "✅ **Implemented**."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Reports]
+      summary: Edit / resubmit my report
+      description: "✅ **Implemented**. **Author only.** Works on SUBMITTED or REJECTED reports (not APPROVED). The report goes back to SUBMITTED and the reviewers are notified when it was rejected."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                content: { type: string }
+                weekNumber: { type: integer, nullable: true }
+                attachmentId: { type: integer, nullable: true }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /reports/{id}/status:
+    patch:
+      tags: [Reports]
+      summary: Approve or reject a report
+      description: "✅ **Implemented**. **ORG_SUPERVISOR, ACADEMIC_SUPERVISOR or ADMIN.** Only WEEKLY / FINAL / APPROVAL reports in SUBMITTED status, and not your own report (ABSENCE_WARNING and VISIT are notices). The author is notified."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [APPROVED, REJECTED]
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /supervisor/students:
+    get:
+      tags: [Supervision]
+      summary: Monitoring list of my trainees
+      description: |
+        ✅ **Implemented**. **ACADEMIC_SUPERVISOR or ORG_SUPERVISOR.**
+        Returns their assignments with student info and quick stats for the monitoring screen.
+      responses:
+        '200':
+          description: Trainees with stats
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    assignment: { $ref: '#/components/schemas/Assignment' }
+                    attendanceRate: { type: number, nullable: true, example: 92.5, description: "Percent of PRESENT/LATE days; null when there are no attendance records yet" }
+                    reportsSubmitted: { type: integer }
+                    hasEvaluation: { type: boolean }
+                    finalGrade: { type: number, nullable: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /notes:
+    post:
+      tags: [Supervision]
+      summary: Add a supervisor note
+      description: "✅ **Implemented**. **ACADEMIC_SUPERVISOR** of that assignment, or ADMIN."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignmentId, note]
+              properties:
+                assignmentId: { type: integer }
+                note: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Note' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /assignments/{id}/notes:
+    get:
+      tags: [Supervision]
+      summary: Notes of an assignment
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN. Newest first."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Notes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Note' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /evaluations/criteria:
+    get:
+      tags: [Supervision]
+      summary: Rows of the evaluation form (نموذج تقييم المتدرب من جهة التدريب)
+      description: "✅ **Implemented**. Any logged-in user. Use it to build the form: 8 criteria, 5 points each, 40 in total."
+      responses:
+        '200':
+          description: Criteria
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  criteria:
+                    type: array
+                    items: { $ref: '#/components/schemas/EvaluationCriterion' }
+                  maxTotal: { type: integer, example: 40 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /evaluations:
+    post:
+      tags: [Supervision]
+      summary: Submit the trainee evaluation form
+      description: |
+        ✅ **Implemented**. **ORG_SUPERVISOR** of that assignment (or ADMIN). One form per trainee (409 if it already exists); not allowed on a CANCELLED assignment.
+        All 8 criteria are required (score 0–5, optional note each). `totalScore` is the sum, out of 40, computed by the server.
+        `wouldHire` answers "هل ترغبون بتوظيف المتدرب بعد تخرجه؟"; if `false`, `noHireReason` is required.
+        The academic supervisor is notified. The student cannot see the evaluation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateEvaluationRequest' }
+      responses:
+        '201':
+          description: Created (returned in the shape of the paper form)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Evaluation' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: This trainee has already been evaluated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Supervision]
+      summary: List evaluations I can see
+      description: "✅ **Implemented**. ACADEMIC_SUPERVISOR (their trainees), ORG_SUPERVISOR (their trainees) or ADMIN."
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated evaluations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Evaluation' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /evaluations/{assignmentId}:
+    get:
+      tags: [Supervision]
+      summary: The evaluation form of one trainee
+      description: "✅ **Implemented**. ACADEMIC_SUPERVISOR / ORG_SUPERVISOR of that assignment, or ADMIN. 404 if not evaluated yet."
+      parameters:
+        - name: assignmentId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Evaluation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Evaluation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /final-grades:
+    post:
+      tags: [Supervision]
+      summary: Set the final grade
+      description: |
+        ✅ **Implemented**. **ACADEMIC_SUPERVISOR** of that assignment, or ADMIN.
+        Also marks the assignment `COMPLETED` and notifies the student. 409 if a grade already exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assignmentId, grade]
+              properties:
+                assignmentId: { type: integer }
+                grade: { type: number, minimum: 0, maximum: 100 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinalGrade' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Final grade already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /final-grades/{assignmentId}:
+    get:
+      tags: [Supervision]
+      summary: Get the final grade of an assignment
+      description: "✅ **Implemented**. The student, their supervisors, or ADMIN."
+      parameters:
+        - name: assignmentId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Final grade
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinalGrade' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /visits:
+    post:
+      tags: [Visits]
+      summary: Book a field visit
+      description: |
+        ✅ **Implemented**. **ACADEMIC_SUPERVISOR only.** Picks the organization supervisor (`orgSupervisorId`) and a date + time (`scheduledAt`, ISO 8601, in the future).
+        You can only book with a supervisor who has an ACTIVE trainee of yours (403). Visits are 1 hour long: an overlapping PENDING/APPROVED visit for either side returns 409.
+        If `message` is omitted, a polite Arabic request message is generated. The organization supervisor is notified and answers via `/visits/{id}/respond`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orgSupervisorId, scheduledAt]
+              properties:
+                orgSupervisorId: { type: integer, description: "Organization supervisor profile ID (not the user ID)" }
+                scheduledAt: { type: string, format: date-time, example: '2026-10-20T07:00:00.000Z' }
+                message: { type: string, maxLength: 1000 }
+      responses:
+        '201':
+          description: Created with status PENDING
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldVisit' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Overlapping visit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [Visits]
+      summary: Field visits table (الزيارات الميدانية)
+      description: |
+        ✅ **Implemented**. ACADEMIC_SUPERVISOR sees their visits; ORG_SUPERVISOR sees the requests sent to them; ADMIN sees all.
+        Call it twice to fill the two tables: `?when=upcoming` (soonest first) and `?when=past` (latest first).
+        Each row carries everything the table needs: organization name, supervisor name, supervisor phone, visit date, `isDone` and `notes`.
+      parameters:
+        - name: when
+          in: query
+          schema: { type: string, enum: [upcoming, past] }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/VisitStatus' }
+        - name: isDone
+          in: query
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated visits
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/FieldVisit' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /visits/{id}:
+    patch:
+      tags: [Visits]
+      summary: Tick "Done" and/or write notes
+      description: |
+        ✅ **Implemented**. **ACADEMIC_SUPERVISOR** who owns the visit (or ADMIN). Send `isDone` and/or `notes`.
+        `isDone: true` is only allowed on an APPROVED visit whose date has arrived (400 otherwise). `isDone: false` un-ticks it.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isDone: { type: boolean }
+                notes: { type: string, nullable: true, maxLength: 2000 }
+      responses:
+        '200':
+          description: Updated visit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldVisit' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /visits/{id}/respond:
+    patch:
+      tags: [Visits]
+      summary: Approve or decline a visit request
+      description: |
+        ✅ **Implemented**. **ORG_SUPERVISOR** the request was sent to (or ADMIN). Only a PENDING request whose time has not passed.
+        If `message` is omitted a default Arabic reply is used (approve: «الوقت مناسب جداً ونتطلع للقائكم قريباً.»). The academic supervisor is notified.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, DECLINE] }
+                message: { type: string, maxLength: 1000 }
+      responses:
+        '200':
+          description: Updated visit (status APPROVED or DECLINED)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldVisit' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /visits/{id}/cancel:
+    patch:
+      tags: [Visits]
+      summary: Cancel a visit
+      description: "✅ **Implemented**. **ACADEMIC_SUPERVISOR** who owns it (or ADMIN). Only PENDING/APPROVED visits that are not done. The organization supervisor is notified."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Visit with status CANCELLED
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FieldVisit' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /messages/contacts:
+    get:
+      tags: [Messages]
+      summary: People I can message
+      description: |
+        ✅ **Implemented**. Academic supervisor: their students and organization supervisors. Student and organization supervisor: their academic supervisor(s). ADMIN: everyone.
+        Use it to fill the "recipient" list.
+      responses:
+        '200':
+          description: Contacts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Contact' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /messages/unread-count:
+    get:
+      tags: [Messages]
+      summary: Number of unread messages (badge)
+      description: "✅ **Implemented**. Poll this every ~15–30 seconds."
+      responses:
+        '200':
+          description: Count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /messages/conversations:
+    get:
+      tags: [Messages]
+      summary: Inbox (one row per person)
+      description: "✅ **Implemented**. Newest conversation first, with the last message and the unread count."
+      responses:
+        '200':
+          description: Conversations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Conversation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /messages/with/{userId}:
+    get:
+      tags: [Messages]
+      summary: Open a conversation
+      description: |
+        ✅ **Implemented**. Messages between me and `userId`, **oldest first**. Opening it marks their messages to me as read.
+        For older messages pass `before` = the smallest message id you already have. 403 if you are not allowed to message that user.
+        For live chat, poll this endpoint every few seconds.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: before
+          in: query
+          schema: { type: integer }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Message' }
+                  hasMore: { type: boolean }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /messages:
+    post:
+      tags: [Messages]
+      summary: Send a message (chat line or email-style)
+      description: |
+        ✅ **Implemented**. A chat line is just `body`. For an email-style message add `subject` and/or `attachmentId` (upload the file first with `POST /attachments`; you can only attach your own uploads).
+        Allowed pairs: academic supervisor ↔ their students, academic supervisor ↔ their organization supervisors (403 otherwise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipientId, body]
+              properties:
+                recipientId: { type: integer, description: "User ID" }
+                subject: { type: string, maxLength: 200 }
+                body: { type: string, maxLength: 5000 }
+                attachmentId: { type: integer }
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /messages/broadcast:
+    post:
+      tags: [Messages]
+      summary: Send one message (e.g. a form) to all my students and/or organizations
+      description: "✅ **Implemented**. **ACADEMIC_SUPERVISOR only.** Goes to everyone linked to their ACTIVE assignments; each recipient gets their own copy."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [audience, subject, body]
+              properties:
+                audience: { type: string, enum: [MY_STUDENTS, MY_ORGANIZATIONS, BOTH] }
+                subject: { type: string, maxLength: 200 }
+                body: { type: string, maxLength: 5000 }
+                attachmentId: { type: integer }
+      responses:
+        '201':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sent: { type: integer, description: Number of recipients }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /attachments:
+    post:
+      tags: [Messages]
+      summary: Upload a file to attach to a message
+      description: "✅ **Implemented**. `multipart/form-data` with one field named `file`. Max 10 MB. Allowed: PDF, Word, Excel, PowerPoint, PNG, JPG, TXT (400 otherwise, 413 if too large)."
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Uploaded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Attachment' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413':
+          description: File too large
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /attachments/{id}:
+    get:
+      tags: [Messages]
+      summary: Download an attachment
+      description: "✅ **Implemented**. The uploader, the sender/recipient of a message that carries it, or ADMIN. Send the Bearer token (fetch the file as a blob; a plain link will not carry it)."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: The file
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: My notifications
+      description: "✅ **Implemented**. Any logged-in user. Newest first."
+      parameters:
+        - name: unread
+          in: query
+          description: Set to `true` to return only unread
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated notifications plus unread count (for the bell badge)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  unreadCount: { type: integer }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /notifications/{id}/read:
+    patch:
+      tags: [Notifications]
+      summary: Mark one notification as read
+      description: "✅ **Implemented**. Only the owner."
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notification' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /notifications/read-all:
+    patch:
+      tags: [Notifications]
+      summary: Mark all my notifications as read
+      description: "✅ **Implemented**."
+      responses:
+        '200':
+          description: Done
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /stats/summary:
+    get:
+      tags: [Statistics]
+      summary: Impact indicators
+      description: "✅ **Implemented**. **ADMIN or ACADEMIC_SUPERVISOR.** Feeds the dashboard and the project's impact indicators."
+      responses:
+        '200':
+          description: Summary numbers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalOpportunities: { type: integer, description: "Impact indicator: عدد فرص التدريب" }
+                  completionRate: { type: number, example: 78.5, description: "Impact indicator: نسبة إكمال التدريب (percent of assignments that are COMPLETED)" }
+                  providerSatisfaction: { type: number, nullable: true, example: 4.2, description: "Impact indicator: رضا جهات التدريب — average `satisfaction` (1..5) from the evaluation forms" }
+                  providerSatisfactionRate: { type: number, nullable: true, example: 80, description: Same as a percent (1 = 0%, 5 = 100%) }
+                  providerSatisfactionResponses: { type: integer }
+                  employmentRate: { type: number, nullable: true, example: 40, description: "Impact indicator: نسبة التوظيف بعد التدريب — percent of completed trainees who reported a job (PATCH /assignments/{id}/employment)" }
+                  employmentResponses: { type: integer }
+                  openOpportunities: { type: integer }
+                  organizationsByType: { type: object, additionalProperties: { type: integer }, example: { PRIVATE: 5, GOVERNMENT: 2 } }
+                  totalApplications: { type: integer }
+                  activeAssignments: { type: integer }
+                  completedAssignments: { type: integer }
+                  averageFinalGrade: { type: number, nullable: true }
+                  wouldHireRate: { type: number, nullable: true, example: 82.5, description: "Percent of evaluations where the organization WANTS to hire the trainee (intention; see employmentRate for real jobs)" }
+                  averageAttendanceRate: { type: number, nullable: true }
+                  averageEvaluationScore: { type: number, nullable: true, example: 33.5, description: "Average organization evaluation of trainees, out of 40" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /logs:
+    get:
+      tags: [System]
+      summary: Audit logs
+      description: "✅ **Implemented**. **ADMIN only.** Newest first."
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: integer }
+        - name: action
+          in: query
+          schema: { type: string, example: USER_CREATED }
+        - name: entity
+          in: query
+          schema: { type: string, example: User }
+        - name: from
+          in: query
+          description: Only logs created at or after this date/time
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Only logs created at or before this date/time
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditLog' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pages: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Your role is not allowed to do this
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Record not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Invalid input
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: Validation failed }
+              details:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    field: { type: string, example: email }
+                    message: { type: string, example: Invalid email }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+    Role:
+      type: string
+      enum: [STUDENT, ACADEMIC_SUPERVISOR, ORG_SUPERVISOR, ADMIN]
+    OpportunityStatus:
+      type: string
+      enum: [OPEN, CLOSED]
+    ApplicationStatus:
+      type: string
+      enum: [PENDING, NOMINATED, APPROVED, REJECTED]
+    AssignmentStatus:
+      type: string
+      enum: [ACTIVE, COMPLETED, CANCELLED]
+    AttendanceStatus:
+      type: string
+      enum: [PRESENT, ABSENT, LATE, EXCUSED]
+    ReportType:
+      type: string
+      enum: [WEEKLY, FINAL, APPROVAL, ABSENCE_WARNING, VISIT]
+      description: "Student: WEEKLY, FINAL. Training provider: APPROVAL, ABSENCE_WARNING (إنذار غياب), VISIT (تقرير زيارة)"
+    AccountStatus:
+      type: string
+      enum: [PENDING, ACTIVE, REJECTED, SUSPENDED]
+    OrganizationType:
+      type: string
+      enum: [PRIVATE, EDUCATIONAL, GOVERNMENT]
+      description: "منشأة / تعليمية / حكومية"
+    OpportunityType:
+      type: string
+      enum: [COOP, SUMMER]
+      description: "تدريب تعاوني / تدريب صيفي"
+    ReportStatus:
+      type: string
+      enum: [DRAFT, SUBMITTED, APPROVED, REJECTED]
+
+    AuthUser:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        name: { type: string, example: System Admin }
+        email: { type: string, example: admin@coop.test }
+        role: { $ref: '#/components/schemas/Role' }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        organization:
+          type: object
+          nullable: true
+          description: Training providers only — use `type` to choose the portal view
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            type: { $ref: '#/components/schemas/OrganizationType' }
+            sector: { type: string, nullable: true }
+
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        phone: { type: string, nullable: true }
+        role: { $ref: '#/components/schemas/Role' }
+        isActive: { type: boolean }
+        status: { $ref: '#/components/schemas/AccountStatus' }
+        rejectReason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        student:
+          allOf: [{ $ref: '#/components/schemas/StudentProfile' }]
+          nullable: true
+        academicSupervisor:
+          allOf: [{ $ref: '#/components/schemas/AcademicSupervisorProfile' }]
+          nullable: true
+        orgSupervisor:
+          allOf: [{ $ref: '#/components/schemas/OrgSupervisorProfile' }]
+          nullable: true
+
+    CreateUserRequest:
+      type: object
+      required: [name, email, password, role]
+      properties:
+        name: { type: string, minLength: 2, example: Sara Ahmed }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        phone: { type: string, example: '0551234567' }
+        role: { $ref: '#/components/schemas/Role' }
+        universityId: { type: string, description: Required for STUDENT, example: '4400123' }
+        major: { type: string, description: STUDENT }
+        department: { type: string, description: ACADEMIC_SUPERVISOR }
+        organizationId: { type: integer, description: Required for ORG_SUPERVISOR }
+        position: { type: string, description: ORG_SUPERVISOR }
+
+    StudentProfile:
+      type: object
+      properties:
+        id: { type: integer }
+        userId: { type: integer }
+        universityId: { type: string }
+        major: { type: string, nullable: true }
+        gpa: { type: number, nullable: true }
+    AcademicSupervisorProfile:
+      type: object
+      properties:
+        id: { type: integer }
+        userId: { type: integer }
+        department: { type: string, nullable: true }
+    OrgSupervisorProfile:
+      type: object
+      properties:
+        id: { type: integer }
+        userId: { type: integer }
+        organizationId: { type: integer }
+        position: { type: string, nullable: true }
+        organization: { $ref: '#/components/schemas/Organization' }
+
+    Organization:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        type: { $ref: '#/components/schemas/OrganizationType' }
+        crNumber: { type: string, nullable: true, description: Commercial registration number }
+        sector: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        contactEmail: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+    OrganizationInput:
+      type: object
+      properties:
+        name: { type: string, description: Required on create }
+        type: { $ref: '#/components/schemas/OrganizationType' }
+        crNumber: { type: string, nullable: true }
+        sector: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        contactEmail: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+
+    Opportunity:
+      type: object
+      properties:
+        id: { type: integer }
+        organizationId: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        type: { $ref: '#/components/schemas/OpportunityType' }
+        seats: { type: integer }
+        seatsTaken: { type: integer, description: APPROVED applications }
+        seatsAvailable: { type: integer }
+        applicationsCount: { type: integer }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time }
+        deadline: { type: string, format: date-time, nullable: true, description: Last day to apply }
+        location: { type: string, nullable: true }
+        target: { type: string, nullable: true, description: Target major / college }
+        requirements: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/OpportunityStatus' }
+        createdAt: { type: string, format: date-time }
+        organization: { $ref: '#/components/schemas/Organization' }
+    CreateOpportunityRequest:
+      type: object
+      required: [title, description, seats, startDate, endDate]
+      properties:
+        organizationId: { type: integer, description: ADMIN only; ignored for ORG_SUPERVISOR }
+        title: { type: string, example: Backend Developer Trainee }
+        description: { type: string }
+        type: { $ref: '#/components/schemas/OpportunityType' }
+        seats: { type: integer, minimum: 1, example: 3 }
+        startDate: { type: string, format: date, example: '2027-01-15' }
+        endDate: { type: string, format: date, example: '2027-04-15' }
+        deadline: { type: string, format: date, example: '2027-01-05', description: Last day to apply (optional) }
+        location: { type: string, example: 'Najran, head office' }
+        target: { type: string, example: Computer Science }
+        requirements: { type: string }
+
+    Application:
+      type: object
+      properties:
+        id: { type: integer }
+        studentId: { type: integer, description: "Student profile ID (not user ID)" }
+        opportunityId: { type: integer }
+        status: { $ref: '#/components/schemas/ApplicationStatus' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        student: { $ref: '#/components/schemas/StudentProfile' }
+        opportunity: { $ref: '#/components/schemas/Opportunity' }
+
+    Assignment:
+      type: object
+      properties:
+        id: { type: integer }
+        studentId: { type: integer }
+        opportunityId: { type: integer }
+        academicSupervisorId: { type: integer }
+        orgSupervisorId: { type: integer }
+        startDate: { type: string, format: date-time }
+        endDate: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/AssignmentStatus' }
+        semester: { type: string, nullable: true, example: الفصل الأول }
+        academicYear: { type: string, nullable: true, example: '1448' }
+        commencementDate: { type: string, format: date, nullable: true, description: "Form (1): first day at the organization" }
+        employedAfterTraining: { type: boolean, nullable: true }
+        employerName: { type: string, nullable: true }
+        employmentRecordedAt: { type: string, format: date-time, nullable: true }
+        student:
+          allOf: [{ $ref: '#/components/schemas/StudentProfile' }]
+          description: Includes `user` with name and email
+        opportunity: { $ref: '#/components/schemas/Opportunity' }
+        academicSupervisor:
+          allOf: [{ $ref: '#/components/schemas/AcademicSupervisorProfile' }]
+          description: Includes `user` with name and email
+        orgSupervisor:
+          allOf: [{ $ref: '#/components/schemas/OrgSupervisorProfile' }]
+          description: Includes `user` with name and email
+
+    Attendance:
+      type: object
+      properties:
+        id: { type: integer }
+        assignmentId: { type: integer }
+        date: { type: string, format: date }
+        checkIn: { type: string, format: date-time, nullable: true }
+        checkOut: { type: string, format: date-time, nullable: true }
+        status: { $ref: '#/components/schemas/AttendanceStatus' }
+
+    Report:
+      type: object
+      properties:
+        id: { type: integer }
+        assignmentId: { type: integer }
+        type: { $ref: '#/components/schemas/ReportType' }
+        title: { type: string }
+        content: { type: string }
+        weekNumber: { type: integer, nullable: true }
+        attachment:
+          allOf: [{ $ref: '#/components/schemas/Attachment' }]
+          nullable: true
+          description: Download with GET /attachments/{id}
+        submittedById: { type: integer, description: User ID }
+        status: { $ref: '#/components/schemas/ReportStatus' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Note:
+      type: object
+      properties:
+        id: { type: integer }
+        assignmentId: { type: integer }
+        supervisorId: { type: integer, description: User ID }
+        note: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    EvaluationCriterion:
+      type: object
+      properties:
+        key: { type: string, example: attendance }
+        label: { type: string, example: "الحضور والمواظبة في أوقات الدوام الرسمية" }
+        max: { type: integer, example: 5 }
+
+    EvaluationScores:
+      type: object
+      description: "One entry per criterion key: attendance, practical_application, ambition, cooperation, conduct, regulations, performance, tools"
+      additionalProperties:
+        type: object
+        properties:
+          score: { type: number, minimum: 0, maximum: 5 }
+          notes: { type: string }
+      example:
+        attendance: { score: 5, notes: ممتاز }
+        practical_application: { score: 4 }
+        ambition: { score: 5 }
+        cooperation: { score: 5 }
+        conduct: { score: 5 }
+        regulations: { score: 5 }
+        performance: { score: 4 }
+        tools: { score: 5 }
+
+    CreateEvaluationRequest:
+      type: object
+      required: [assignmentId, scores, wouldHire]
+      properties:
+        assignmentId: { type: integer }
+        scores: { $ref: '#/components/schemas/EvaluationScores' }
+        wouldHire: { type: boolean, description: "هل ترغبون بتوظيف المتدرب بعد تخرجه؟" }
+        noHireReason: { type: string, description: "Required when wouldHire is false" }
+        comments: { type: string }
+        evaluatorTitle: { type: string, description: المسمى الوظيفي }
+        signature: { type: string, description: "Drawn signature as a PNG/JPEG data URL (max ~300 KB)", example: "data:image/png;base64,iVBOR..." }
+        satisfaction: { type: integer, minimum: 1, maximum: 5, description: "Impact indicator — the organization's satisfaction with the cooperative-training programme" }
+
+    Evaluation:
+      type: object
+      description: Shaped like the paper form, ready to render or print
+      properties:
+        id: { type: integer }
+        assignmentId: { type: integer }
+        semester: { type: string, nullable: true }
+        academicYear: { type: string, nullable: true }
+        trainee:
+          type: object
+          properties:
+            name: { type: string }
+            universityId: { type: string }
+            major: { type: string, nullable: true }
+        organization:
+          type: object
+          properties:
+            id: { type: integer }
+            name: { type: string }
+        scores: { $ref: '#/components/schemas/EvaluationScores' }
+        totalScore: { type: number, example: 37 }
+        maxScore: { type: integer, example: 40 }
+        wouldHire: { type: boolean }
+        noHireReason: { type: string, nullable: true }
+        comments: { type: string, nullable: true }
+        satisfaction: { type: integer, nullable: true }
+        signature: { type: string, nullable: true }
+        evaluator:
+          type: object
+          properties:
+            id: { type: integer }
+            name: { type: string }
+            jobTitle: { type: string, nullable: true }
+        evaluatedAt: { type: string, format: date-time }
+
+    FinalGrade:
+      type: object
+      properties:
+        id: { type: integer }
+        assignmentId: { type: integer }
+        grade: { type: number }
+        finalizedById: { type: integer, description: User ID }
+        finalizedAt: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: integer }
+        userId: { type: integer }
+        message: { type: string }
+        isRead: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        userId: { type: integer, nullable: true }
+        action: { type: string, example: USER_CREATED }
+        entity: { type: string, example: User }
+        entityId: { type: integer, nullable: true }
+        meta: { type: object, nullable: true, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+
+    VisitStatus:
+      type: string
+      enum: [PENDING, APPROVED, DECLINED, CANCELLED]
+
+    ContactInfo:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        phone: { type: string, nullable: true }
+
+    FieldVisit:
+      type: object
+      description: One row of the "الزيارات الميدانية" table
+      properties:
+        id: { type: integer }
+        scheduledAt: { type: string, format: date-time, description: "Visit date and time" }
+        status: { $ref: '#/components/schemas/VisitStatus' }
+        requestMessage: { type: string }
+        responseMessage: { type: string, nullable: true }
+        respondedAt: { type: string, format: date-time, nullable: true }
+        isDone: { type: boolean, description: "The Done checkbox" }
+        doneAt: { type: string, format: date-time, nullable: true }
+        notes: { type: string, nullable: true, description: "Academic supervisor's notes" }
+        createdAt: { type: string, format: date-time }
+        academicSupervisor:
+          type: object
+          properties:
+            id: { type: integer }
+            department: { type: string, nullable: true }
+            user: { $ref: '#/components/schemas/ContactInfo' }
+        orgSupervisor:
+          type: object
+          properties:
+            id: { type: integer }
+            position: { type: string, nullable: true }
+            user: { $ref: '#/components/schemas/ContactInfo' }
+            organization: { $ref: '#/components/schemas/Organization' }
+
+    Attachment:
+      type: object
+      properties:
+        id: { type: integer }
+        originalName: { type: string, example: "نموذج الزيارات.pdf" }
+        mimeType: { type: string, example: application/pdf }
+        size: { type: integer, description: Bytes }
+        createdAt: { type: string, format: date-time }
+
+    Message:
+      type: object
+      properties:
+        id: { type: integer }
+        senderId: { type: integer }
+        recipientId: { type: integer }
+        subject: { type: string, nullable: true }
+        body: { type: string }
+        attachment:
+          allOf: [{ $ref: '#/components/schemas/Attachment' }]
+          nullable: true
+        readAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    Person:
+      type: object
+      properties:
+        id: { type: integer, description: User ID }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+
+    Contact:
+      allOf:
+        - $ref: '#/components/schemas/Person'
+        - type: object
+          properties:
+            organizationName: { type: string, description: "Only for ORG_SUPERVISOR contacts of an academic supervisor" }
+
+    Conversation:
+      type: object
+      properties:
+        user: { $ref: '#/components/schemas/Person' }
+        lastMessage: { $ref: '#/components/schemas/Message' }
+        unreadCount: { type: integer }

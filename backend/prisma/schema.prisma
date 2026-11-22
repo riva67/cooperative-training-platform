@@ -1,0 +1,389 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Enums ─────────────
+enum Role {
+  STUDENT
+  ACADEMIC_SUPERVISOR
+  ORG_SUPERVISOR
+  ADMIN
+}
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+  SUSPENDED
+}
+
+enum OrganizationType {
+  PRIVATE // منشأة
+  EDUCATIONAL // تعليمية
+  GOVERNMENT // حكومية
+}
+
+enum OpportunityType {
+  COOP // تدريب تعاوني
+  SUMMER // تدريب صيفي
+}
+
+enum OpportunityStatus {
+  OPEN
+  CLOSED
+}
+
+enum ApplicationStatus {
+  PENDING
+  NOMINATED
+  APPROVED
+  REJECTED
+}
+
+enum AssignmentStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+enum ReportType {
+  WEEKLY // student
+  FINAL // student
+  APPROVAL // training provider
+  ABSENCE_WARNING // training provider: إنذار غياب
+  VISIT // training provider: تقرير زيارة
+}
+
+enum ReportStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+// ───────────── Users & profiles ─────────────
+model User {
+  id           Int           @id @default(autoincrement())
+  name         String
+  email        String        @unique
+  passwordHash String
+  role         Role
+  isActive     Boolean       @default(true)
+  phone        String?
+  status       AccountStatus @default(ACTIVE)
+  reviewedById Int?
+  reviewedAt   DateTime?
+  rejectReason String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  reviewedBy       User?  @relation("AccountReviews", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAccounts User[] @relation("AccountReviews")
+
+  student            Student?
+  academicSupervisor AcademicSupervisor?
+  orgSupervisor      OrgSupervisor?
+  notifications      Notification[]
+  auditLogs          AuditLog[]
+  reportsSubmitted   Report[]
+  notes              SupervisorNote[]
+  evaluations        Evaluation[]
+  finalGrades        FinalGrade[]
+  sentMessages       Message[]           @relation("SentMessages")
+  receivedMessages   Message[]           @relation("ReceivedMessages")
+  attachments        Attachment[]
+}
+
+model Student {
+  id           Int     @id @default(autoincrement())
+  userId       Int     @unique
+  universityId String  @unique
+  major        String?
+  gpa          Float?
+
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications Application[]
+  assignments  TrainingAssignment[]
+}
+
+model AcademicSupervisor {
+  id         Int     @id @default(autoincrement())
+  userId     Int     @unique
+  department String?
+
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assignments TrainingAssignment[]
+  visits      FieldVisit[]
+}
+
+model Organization {
+  id           Int              @id @default(autoincrement())
+  name         String
+  type         OrganizationType @default(PRIVATE)
+  crNumber     String?          @unique
+  sector       String? // sub-type chosen on the sign-up form (شركة، مصنع، جامعة أهلية، وزارة ...)
+  city         String?
+  contactEmail String?
+  phone        String?
+
+  supervisors   OrgSupervisor[]
+  opportunities TrainingOpportunity[]
+}
+
+model OrgSupervisor {
+  id             Int     @id @default(autoincrement())
+  userId         Int     @unique
+  organizationId Int
+  position       String?
+
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  assignments  TrainingAssignment[]
+  visits       FieldVisit[]
+}
+
+// ───────────── Training flow ─────────────
+model TrainingOpportunity {
+  id             Int               @id @default(autoincrement())
+  organizationId Int
+  title          String
+  description    String
+  type           OpportunityType   @default(COOP)
+  seats          Int               @default(1)
+  startDate      DateTime
+  endDate        DateTime
+  deadline       DateTime? // last day to apply
+  location       String?
+  target         String? // target major / college
+  requirements   String?
+  status         OpportunityStatus @default(OPEN)
+  createdAt      DateTime          @default(now())
+
+  organization Organization         @relation(fields: [organizationId], references: [id])
+  applications Application[]
+  assignments  TrainingAssignment[]
+
+  @@index([organizationId, status])
+}
+
+model Application {
+  id            Int               @id @default(autoincrement())
+  studentId     Int
+  opportunityId Int
+  status        ApplicationStatus @default(PENDING)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  student     Student             @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  opportunity TrainingOpportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, opportunityId])
+  @@index([opportunityId, status])
+}
+
+model TrainingAssignment {
+  id                    Int              @id @default(autoincrement())
+  studentId             Int
+  opportunityId         Int
+  academicSupervisorId  Int
+  orgSupervisorId       Int
+  startDate             DateTime
+  endDate               DateTime
+  status                AssignmentStatus @default(ACTIVE)
+  semester              String?
+  academicYear          String?
+  // نموذج (1) مباشرة المتدرب: set automatically on the first check-in, or confirmed by the training provider
+  commencementDate      DateTime?        @db.Date
+  // impact indicator "post-training employment" (reported after the training)
+  employedAfterTraining Boolean?
+  employerName          String?
+  employmentRecordedAt  DateTime?
+
+  student            Student             @relation(fields: [studentId], references: [id])
+  opportunity        TrainingOpportunity @relation(fields: [opportunityId], references: [id])
+  academicSupervisor AcademicSupervisor  @relation(fields: [academicSupervisorId], references: [id])
+  orgSupervisor      OrgSupervisor       @relation(fields: [orgSupervisorId], references: [id])
+
+  attendance Attendance[]
+  reports    Report[]
+  notes      SupervisorNote[]
+  evaluation Evaluation?
+  finalGrade FinalGrade?
+
+  @@index([studentId, status])
+  @@index([academicSupervisorId])
+  @@index([orgSupervisorId])
+}
+
+model Attendance {
+  id           Int              @id @default(autoincrement())
+  assignmentId Int
+  date         DateTime         @db.Date
+  checkIn      DateTime?
+  checkOut     DateTime?
+  status       AttendanceStatus @default(PRESENT)
+
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assignmentId, date])
+}
+
+model Report {
+  id            Int          @id @default(autoincrement())
+  assignmentId  Int
+  type          ReportType
+  title         String
+  content       String
+  weekNumber    Int? // WEEKLY reports
+  attachmentId  Int? // e.g. the report as a Word / PDF file
+  submittedById Int
+  status        ReportStatus @default(SUBMITTED)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @default(now()) @updatedAt
+
+  assignment  TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  submittedBy User               @relation(fields: [submittedById], references: [id])
+  attachment  Attachment?        @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+
+  @@index([assignmentId, type])
+}
+
+model SupervisorNote {
+  id           Int      @id @default(autoincrement())
+  assignmentId Int
+  supervisorId Int
+  note         String
+  createdAt    DateTime @default(now())
+
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  supervisor User               @relation(fields: [supervisorId], references: [id])
+}
+
+model Evaluation {
+  id             Int      @id @default(autoincrement())
+  assignmentId   Int      @unique // one evaluation form per trainee
+  evaluatorId    Int
+  // { "<criterion key>": { "score": 0-5, "notes": "..." } }  (criteria: src/modules/evaluations/criteria.js)
+  scores         Json
+  totalScore     Float // out of 40
+  wouldHire      Boolean // "Do you want to hire the trainee after graduation?"
+  noHireReason   String?
+  comments       String?
+  evaluatorTitle String? // المسمى الوظيفي
+  signature      String? // signature image as a data URL (data:image/png;base64,...)
+  // impact indicator "training-provider satisfaction": 1 (very unsatisfied) .. 5 (very satisfied) with the programme
+  satisfaction   Int?
+  createdAt      DateTime @default(now())
+
+  assignment TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  evaluator  User               @relation(fields: [evaluatorId], references: [id])
+}
+
+model FinalGrade {
+  id            Int      @id @default(autoincrement())
+  assignmentId  Int      @unique
+  grade         Float
+  finalizedById Int
+  finalizedAt   DateTime @default(now())
+
+  assignment  TrainingAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  finalizedBy User               @relation(fields: [finalizedById], references: [id])
+}
+
+// ───────────── System ─────────────
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?
+  action    String
+  entity    String
+  entityId  Int?
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+// ───────────── Field visits ─────────────
+enum VisitStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  CANCELLED
+}
+
+model FieldVisit {
+  id                   Int         @id @default(autoincrement())
+  academicSupervisorId Int
+  orgSupervisorId      Int
+  scheduledAt          DateTime
+  status               VisitStatus @default(PENDING)
+  requestMessage       String
+  responseMessage      String?
+  respondedAt          DateTime?
+  isDone               Boolean     @default(false)
+  doneAt               DateTime?
+  notes                String?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  academicSupervisor AcademicSupervisor @relation(fields: [academicSupervisorId], references: [id])
+  orgSupervisor      OrgSupervisor      @relation(fields: [orgSupervisorId], references: [id])
+
+  @@index([academicSupervisorId, scheduledAt])
+  @@index([orgSupervisorId, scheduledAt])
+}
+
+// ───────────── Messaging ─────────────
+model Attachment {
+  id           Int      @id @default(autoincrement())
+  originalName String
+  storedName   String   @unique
+  mimeType     String
+  size         Int
+  uploadedById Int
+  createdAt    DateTime @default(now())
+
+  uploadedBy User      @relation(fields: [uploadedById], references: [id])
+  messages   Message[]
+  reports    Report[]
+}
+
+model Message {
+  id           Int       @id @default(autoincrement())
+  senderId     Int
+  recipientId  Int
+  subject      String?
+  body         String
+  attachmentId Int?
+  readAt       DateTime?
+  createdAt    DateTime  @default(now())
+
+  sender     User        @relation("SentMessages", fields: [senderId], references: [id])
+  recipient  User        @relation("ReceivedMessages", fields: [recipientId], references: [id])
+  attachment Attachment? @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+
+  @@index([senderId, recipientId, createdAt])
+  @@index([recipientId, readAt])
+}
