@@ -4,7 +4,7 @@ import Login from './Login';
 import { api, getSavedUser, clearSession, consumeHashSession } from './api';
 import { 
   Clock, CheckCircle2, FileText, Building2, Calendar, 
-  AlertCircle, Upload, Image as ImageIcon, Plus, Trash2,
+  AlertCircle, Upload, Image as ImageIcon, Plus,
   LogIn, LogOut, CheckSquare, Send, X, MapPin, AlertTriangle, FileCheck, Eye,
   Briefcase, Printer
 } from 'lucide-react';
@@ -544,7 +544,7 @@ function Portal({ user, onLogout }) {
   };
 
   // --- 4. حالة المهام ومعاينتها (بيانات تجريبية - لا يوجد endpoint للمهام في الـ backend بعد) ---
-  const [tasks, setTasks] = useState([
+  const [tasks] = useState([
     {
       id: 1,
       title: 'مراجعة كود واجهات المستخدم RTL',
