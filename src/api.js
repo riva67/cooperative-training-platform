@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://localhost:4000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 
 // دالة مساعدة لعمل طلبات الـ Fetch مع التوكن تلقائياً
 async function apiRequest(endpoint, options = {}) {
