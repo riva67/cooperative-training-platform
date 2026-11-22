@@ -45,7 +45,7 @@ async function request(method, path, body) {
 
   let res;
   try {
-    res = await fetch(API_URL + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    res = await fetch(API_URL + path, { method, headers, ...(body && { body: JSON.stringify(body) }) });
   } catch {
     throw new ApiError(0, 'تعذر الاتصال بالخادم. تأكد من تشغيل الـ backend.');
   }
