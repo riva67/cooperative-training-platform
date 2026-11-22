@@ -1,0 +1,977 @@
+import { useState } from "react";
+import { authApi } from "./api";
+
+const menu = [
+  { label: "الرئيسية", href: "#home" },
+  { label: "التسجيل", href: "#portals" },
+  { label: "الجهات والشركاء", href: "#partners" },
+  { label: "الفرص التدريبية", href: "#opportunities" },
+  { label: "معلومات الخدمة", href: "#service" },
+];
+
+const roles = [
+  { id: "student", label: "طالب" },
+  { id: "company", label: "جهة تدريبية" },
+  { id: "supervisor", label: "مشرف" },
+];
+
+const stats = [
+  { value: "1,101", label: "مشرف أكاديمي" },
+  { value: "1,689", label: "جهة تدريبية" },
+  { value: "25,374", label: "متدرب" },
+];
+
+const portals = [
+  {
+    title: "للطلاب والباحثين عن التدريب",
+    text: "استعرض الفرص المتاحة، وقدّم عليها، وتابع خطوات التدريب بسهولة.",
+    cta: "دخول الطلاب",
+  },
+  {
+    title: "للجهات التدريبية والشركاء",
+    text: "أدر طلبات المتدربين، وانشر الفرص الجديدة، وسجّل شراكات جديدة.",
+    cta: "دخول الجهات",
+  },
+  {
+    title: "للمشرفين الأكاديميين",
+    text: "تابع طلابك المتدربين، وراجع تقاريرهم، واعتمد تقييماتهم.",
+    cta: "تسجيل المشرفين",
+  },
+];
+
+const features = [
+  {
+    title: "الوصول إلى الفرصة الأنسب",
+    text: "توفّر لك المنصة أدوات بحث متقدمة تُظهر الفرص التدريبية المناسبة لتخصصك ومهاراتك.",
+  },
+  {
+    title: "متابعة شاملة لتدريبك",
+    text: "تُدار مراحل التدريب كاملة عبر المنصة، مع متابعة مستمرة للساعات والتقدم والتواصل مع المشرفين.",
+  },
+  {
+    title: "سجلك التدريبي",
+    text: "تتيح المنصة حفظ سجل تدريبك وشهادتك ضمن حسابك، والرجوع إليهما في أي وقت.",
+  },
+];
+
+
+const quote = {
+  text: "الشباب هم الطاقة الحقيقية والقوة الحقيقية لتحقيق هذه الرؤية، وأهم ميزة لدينا هي أن شبابنا واعي ومثقف ومبدع ولديه قيم عالية",
+  author: "صاحب السمو الملكي الأمير محمد بن سلمان بن عبدالعزيز ال سعود",
+  image: "6hero.jpg",
+};
+
+const partners = [
+  {
+    name: "جهة حكوميه",
+    location: "الرياض",
+    sector: "القطاع الحكومي",
+    opportunities: 12,
+    trainees: 340,
+    about: "نبذة مختصرة عن الجهة ومجال عملها.",
+    website: "https://example.com",
+    email: "info@example.com",
+    phone: "9200XXXXX",
+  },
+  {
+    name: "جهة تعليمية",
+    location: "جدة",
+    sector: "القطاع التعليمي",
+    opportunities: 8,
+    trainees: 210,
+    about: "نبذة مختصرة عن الجهة ومجال عملها.",
+    website: "https://example.com",
+    email: "info@example.com",
+    phone: "9200XXXXX",
+  },
+  {
+    name: "جهة منشأة",
+    location: "الدمام",
+    sector: "القطاع المنشأة",
+    opportunities: 5,
+    trainees: 120,
+    about: "نبذة مختصرة عن الجهة ومجال عملها.",
+    website: "https://example.com",
+    email: "info@example.com",
+    phone: "9200XXXXX",
+  },
+  {
+    name: "جهة حكومية",
+    location: "أبها",
+    sector: "القطاع الحكومي",
+    opportunities: 4,
+    trainees: 95,
+    about: "نبذة مختصرة عن الجهة ومجال عملها.",
+    website: "https://example.com",
+    email: "info@example.com",
+    phone: "9200XXXXX",
+  },
+  {
+    name: "جهة تعليمية",
+    location: "المدينة المنورة",
+    sector: "القطاع التعليمي",
+    opportunities: 9,
+    trainees: 180,
+    about: "نبذة مختصرة عن الجهة ومجال عملها.",
+    website: "https://example.com",
+    email: "info@example.com",
+    phone: "9200XXXXX",
+  },
+];
+
+const opportunities = [
+  {
+    title: "تدريب تعاوني في تقنية المعلومات",
+    org: "اسم الجهة التدريبية",
+    type: "تدريب تعاوني",
+    deadline: "31/10/2026",
+    location: "الرياض",
+    duration: "3 أشهر",
+    target: "مخصص لطلاب كلية الحاسب",
+    open: true,
+    image: "/hero.jpg",
+  },
+  {
+    title: "برنامج مهارات سوق العمل",
+    org: "اسم الجهة التدريبية",
+    type: "تدريب عن بعد",
+    deadline: "30/10/2026",
+    location: "عن بعد",
+    duration: "6 أسابيع",
+    target: "مفتوح لجميع التخصصات",
+    open: true,
+    image: "/1hero.jpg",
+  },
+  {
+    title: "تدريب في الموارد البشرية",
+    org: "اسم الجهة التدريبية",
+    type: "تدريب تعاوني",
+    deadline: "25/10/2026",
+    location: "جدة",
+    duration: "4 أشهر",
+    target: "مخصص لطلاب كلية الأعمال",
+    open: true,
+    image: "/2hero.jpg",
+  },
+  {
+    title: "تدريب في التسويق الرقمي",
+    org: "اسم الجهة التدريبية",
+    type: "تدريب تعاوني",
+    deadline: "22/10/2026",
+    location: "الدمام",
+    duration: "3 أشهر",
+    target: "مخصص لطلاب كلية الإدارة",
+    open: true,
+    image: "/3hero.jpg",
+  },
+  {
+    title: "تدريب في المحاسبة والمالية",
+    org: "اسم الجهة التدريبية",
+    type: "تدريب تعاوني",
+    deadline: "19/10/2026",
+    location: "أبها",
+    duration: "4 أشهر",
+    target: "مخصص لطلاب كلية الأعمال",
+    open: false,
+    image: "/4hero.jpg",
+  },
+];
+
+const serviceInfo = [
+  { label: "الجمهور المستهدف", value: "الطلاب والجهات التدريبية" },
+  { label: "صفة المستخدم", value: "طالب / جهة / مشرف" },
+  { label: "مدة الخدمة", value: "فوري" },
+  { label: "قنوات تقديم الخدمة", value: "بوابة إلكترونية" },
+  { label: "اللغة", value: "عربي" },
+  { label: "تكلفة الخدمة", value: "مجانية" },
+];
+
+const contact = [
+  { label: "الأسئلة الشائعة", value: "الاطلاع على الأسئلة الشائعة", href: "#" },
+  { label: "رابط الفروع", value: "الاطلاع على رابط الفروع", href: "#" },
+  { label: "أوقات العمل", value: "8 صباحًا - 5 مساءً (من الأحد إلى الخميس)" },
+  { label: "الهاتف", value: "9200XXXXX", href: "tel:9200XXXXX" },
+  { label: "البريد الإلكتروني", value: "info@example.com", href: "mailto:info@example.com" },
+];
+
+const passwordFields = [
+  { name: "password", label: "كلمة المرور (8 أحرف على الأقل)", type: "password" },
+  { name: "confirmPassword", label: "تأكيد كلمة المرور", type: "password" },
+];
+
+const registerFields = {
+  student: [
+    { name: "fullName", label: "الاسم الكامل" },
+    { name: "universityId", label: "الرقم الجامعي" },
+    { name: "email", label: "البريد الإلكتروني", type: "email" },
+    { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
+    ...passwordFields,
+  ],
+  company: [
+    { name: "fullName", label: "اسم مسؤول الحساب" },
+    { name: "orgName", label: "اسم الجهة" },
+    { name: "orgType", label: "نوع الجهة", options: () => ORG_TYPES },
+    {
+      name: "orgSubtype",
+      label: "تصنيف الجهة",
+      labelFor: (f) =>
+        ({ PRIVATE: "نوع المنشأة", EDUCATIONAL: "نوع الجهة التعليمية", GOVERNMENT: "نوع الجهة الحكومية" })[f.orgType],
+      options: (f) => ORG_SUBTYPES[f.orgType] || [],
+      hidden: (f) => !f.orgType,
+    },
+    // government and educational bodies have no commercial registration number
+    { name: "crNumber", label: "رقم السجل التجاري", optional: (f) => f.orgType !== "PRIVATE" },
+    { name: "email", label: "البريد الإلكتروني", type: "email" },
+    { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
+    ...passwordFields,
+  ],
+  supervisor: [
+    { name: "fullName", label: "الاسم الكامل" },
+    { name: "college", label: "الكلية / القسم" },
+    { name: "email", label: "البريد الإلكتروني", type: "email" },
+    { name: "phone", label: "رقم الجوال", type: "tel", optional: true },
+    ...passwordFields,
+  ],
+};
+
+// organization type -> what the backend expects (PRIVATE / EDUCATIONAL / GOVERNMENT)
+const ORG_TYPES = [
+  { value: "PRIVATE", label: "منشأة" },
+  { value: "EDUCATIONAL", label: "تعليمية" },
+  { value: "GOVERNMENT", label: "حكومية" },
+];
+const ORG_SUBTYPES = {
+  PRIVATE: ["شركة", "مصنع", "بنك / مؤسسة مالية", "مستشفى / مركز صحي خاص", "اتصالات وتقنية", "مقاولات وإنشاءات", "تجزئة وتجارة", "جمعية / منظمة غير ربحية", "أخرى"].map((x) => ({ value: x, label: x })),
+  EDUCATIONAL: ["جامعة حكومية", "جامعة أهلية", "كلية", "معهد", "مدرسة", "مركز تدريب", "أكاديمية"].map((x) => ({ value: x, label: x })),
+  GOVERNMENT: ["وزارة", "هيئة", "مؤسسة عامة", "أمانة / بلدية", "إمارة منطقة", "مستشفى / مركز صحي حكومي", "شركة حكومية"].map((x) => ({ value: x, label: x })),
+};
+
+const isOptional = (field, f) => (typeof field.optional === "function" ? field.optional(f) : !!field.optional);
+const isHidden = (field, f) => (field.hidden ? field.hidden(f) : false);
+
+const inputCls =
+  "w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-emerald-600";
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <label className="mb-1 block text-sm text-slate-600">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function OpportunityCard({ o }) {
+  return (
+    <article className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <img src={o.image} alt="" className="h-40 w-full object-cover" />
+      <div className="flex flex-1 flex-col p-5">
+        <span
+          className={`w-fit rounded-md px-2 py-1 text-xs font-medium ${
+            o.open ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+          }`}
+        >
+          {o.open ? "التقديم متاح" : "التقديم مغلق"}
+        </span>
+        <h3 className="mt-3 text-lg font-bold text-slate-800">{o.title}</h3>
+        <p className="mt-1 text-sm font-medium text-emerald-700">{o.org}</p>
+
+        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+          <span className="rounded-md bg-slate-100 px-2 py-1">{o.type}</span>
+          <span className="rounded-md bg-slate-100 px-2 py-1">
+            ينتهي التقديم في {o.deadline}
+          </span>
+        </div>
+
+        <ul className="mt-4 space-y-1 text-sm text-slate-600">
+          <li>موقع التدريب: {o.location}</li>
+          <li>مدة التدريب: {o.duration}</li>
+          <li>{o.target}</li>
+        </ul>
+
+        <div className="mt-auto pt-5">
+          <button
+            disabled={!o.open}
+            className="w-full rounded-lg bg-emerald-700 py-2 text-sm font-medium text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+          >
+            عرض التفاصيل
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function PartnerCard({ p }) {
+  const [show, setShow] = useState(false);
+
+  return (
+    <div className="min-w-[85%] snap-center rounded-xl border border-slate-200 bg-white p-6 md:min-w-0">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full border border-slate-200 text-xl font-bold text-emerald-800">
+        {p.name.charAt(0)}
+      </div>
+      <h3 className="mt-4 font-bold">{p.name}</h3>
+      <p className="mt-1 text-sm text-emerald-700">{p.location}</p>
+      <p className="mt-1 text-sm text-slate-500">{p.sector}</p>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 text-center">
+        <div className="rounded-lg bg-slate-50 p-3">
+          <div className="text-lg font-extrabold text-emerald-800">{p.opportunities}</div>
+          <div className="text-xs text-slate-500">فرصة تدريبية</div>
+        </div>
+        <div className="rounded-lg bg-slate-50 p-3">
+          <div className="text-lg font-extrabold text-emerald-800">{p.trainees}</div>
+          <div className="text-xs text-slate-500">متدرب</div>
+        </div>
+      </div>
+
+      {show && (
+        <div className="mt-4 space-y-3 border-t border-slate-200 pt-4 text-sm">
+          <p className="leading-relaxed text-slate-600">{p.about}</p>
+          <p>
+            <span className="text-slate-500">الموقع الإلكتروني: </span>
+            <a href={p.website} target="_blank" rel="noreferrer" className="text-emerald-700 hover:underline">
+              زيارة الموقع
+            </a>
+          </p>
+          <p>
+            <span className="text-slate-500">البريد: </span>
+            <a href={`mailto:${p.email}`} className="text-emerald-700 hover:underline">
+              {p.email}
+            </a>
+          </p>
+          <p>
+            <span className="text-slate-500">الهاتف: </span>
+            <a href={`tel:${p.phone}`} className="text-emerald-700 hover:underline">
+              {p.phone}
+            </a>
+          </p>
+        </div>
+      )}
+
+      <button
+        onClick={() => setShow(!show)}
+        className="mt-5 rounded-lg bg-emerald-700 px-5 py-2 text-sm font-medium text-white hover:bg-emerald-800"
+      >
+        {show ? "إخفاء التفاصيل" : "عرض التفاصيل"}
+      </button>
+    </div>
+  );
+}
+
+// Where each role goes after logging in. Set the address of a portal in .env once it is ready,
+// e.g. VITE_PROVIDER_PORTAL_URL=http://localhost:5175 (the training-provider portal).
+const PORTAL_URLS = {
+  STUDENT: import.meta.env.VITE_STUDENT_PORTAL_URL || "http://localhost:5173",
+  ORG_SUPERVISOR: import.meta.env.VITE_PROVIDER_PORTAL_URL || "http://localhost:5175",
+  ACADEMIC_SUPERVISOR: import.meta.env.VITE_SUPERVISOR_PORTAL_URL || "http://localhost:5177",
+  ADMIN: import.meta.env.VITE_ADMIN_PORTAL_URL || "http://localhost:5176",
+};
+
+const ROLE_NAMES = {
+  ACADEMIC_SUPERVISOR: "المشرفين الأكاديميين",
+  ORG_SUPERVISOR: "الجهات التدريبية",
+  ADMIN: "مدير النظام",
+};
+
+// Backend messages -> Arabic
+const SERVER_ERRORS_AR = {
+  "This email is already registered": "البريد الإلكتروني مسجل مسبقاً.",
+  "This university ID is already registered": "الرقم الجامعي مسجل مسبقاً.",
+  "Too many sign-up attempts. Please try again later.": "محاولات تسجيل كثيرة، حاول لاحقاً.",
+  "Too many login attempts. Please try again in a few minutes.": "محاولات دخول كثيرة، حاول بعد دقائق.",
+};
+
+// Login refused for an account that is not active: the backend sends `code`
+function inactiveAccountAr(err) {
+  if (err.code === "REJECTED") {
+    return "تم رفض طلب التسجيل من إدارة النظام." + (err.reason ? ` السبب: ${err.reason}` : "");
+  }
+  if (err.code === "SUSPENDED") return "تم إيقاف حسابك. يرجى التواصل مع إدارة النظام.";
+  return "حسابك قيد المراجعة. ستتمكن من تسجيل الدخول بعد موافقة إدارة النظام.";
+}
+
+function serverErrorAr(err) {
+  if (err instanceof TypeError) return "تعذر الاتصال بالخادم. تأكد من تشغيل الـ backend.";
+  if (SERVER_ERRORS_AR[err.message]) return SERVER_ERRORS_AR[err.message];
+  if (err.message.startsWith("Academic supervisors must register with"))
+    return "يجب التسجيل كمشرف ببريد الجامعة الرسمي.";
+  if (err.message.startsWith("This commercial registration"))
+    return "رقم السجل التجاري مسجل مسبقاً، تواصل مع إدارة النظام.";
+  if (err.status === 400) return "تحقق من البيانات المدخلة (الصيغة غير صحيحة).";
+  return err.message;
+}
+
+const optional = (v) => (v && v.trim() ? v.trim() : undefined);
+
+// the form fields -> what the backend expects
+function buildRegisterPayload(roleId, f) {
+  const common = {
+    name: f.fullName.trim(),
+    email: f.email.trim(),
+    password: f.password,
+    phone: optional(f.phone),
+  };
+  if (roleId === "student") return { role: "STUDENT", ...common, universityId: f.universityId.trim() };
+  if (roleId === "company") {
+    return {
+      role: "ORG_SUPERVISOR",
+      ...common,
+      organizationName: f.orgName.trim(),
+      organizationType: f.orgType,
+      organizationSubtype: optional(f.orgSubtype),
+      crNumber: optional(f.crNumber),
+    };
+  }
+  return { role: "ACADEMIC_SUPERVISOR", ...common, department: f.college.trim() };
+}
+
+function LoginModal({ open, onClose, role, setRole }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [form, setForm] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  if (!open) return null;
+
+  const switchMode = (next) => {
+    setMode(next);
+    setError("");
+    setNotice("");
+  };
+
+  // save the session and open the right portal
+  const enterPortal = (token, user) => {
+    localStorage.setItem("token", token);
+    localStorage.setItem("user", JSON.stringify(user));
+
+    const portalUrl = PORTAL_URLS[user.role];
+    if (portalUrl) {
+      // localStorage is not shared between ports, so the session travels in the link's #hash
+      const session = btoa(encodeURIComponent(JSON.stringify({ token, user })));
+      window.location.href = `${portalUrl}/#session=${session}`;
+    } else {
+      setNotice(
+        `تم تسجيل الدخول بنجاح، لكن بوابة ${ROLE_NAMES[user.role] || "هذا الحساب"} قيد التطوير حالياً.`
+      );
+    }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const { token, user } = await authApi.login(email.trim(), password);
+      enterPortal(token, user);
+    } catch (err) {
+      if (err.status === 401) setError("البريد الإلكتروني أو كلمة المرور غير صحيحة.");
+      else if (err.status === 403) setError(inactiveAccountAr(err));
+      else setError(serverErrorAr(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setError("");
+    setNotice("");
+
+    const fields = registerFields[role];
+    const f = form;
+
+    if (fields.some((x) => !isHidden(x, f) && !isOptional(x, f) && !(f[x.name] || "").trim())) {
+      setError("يرجى تعبئة جميع الحقول المطلوبة.");
+      return;
+    }
+    if (f.phone && !/^[0-9+\-\s]{5,20}$/.test(f.phone.trim())) {
+      setError("رقم الجوال غير صحيح.");
+      return;
+    }
+    if (f.crNumber && f.crNumber.trim().length < 5) {
+      setError("رقم السجل التجاري غير صحيح.");
+      return;
+    }
+    if (f.password.length < 8) {
+      setError("كلمة المرور يجب ألا تقل عن 8 أحرف.");
+      return;
+    }
+    if (f.password !== f.confirmPassword) {
+      setError("كلمتا المرور غير متطابقتين.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const payload = buildRegisterPayload(role, f);
+      const data = await authApi.register(payload);
+
+      if (data.pending) {
+        // company / supervisor: waits for the admin
+        setEmail(payload.email);
+        setPassword("");
+        setForm({});
+        setMode("login");
+        setNotice("تم استلام طلب التسجيل بنجاح. سيتم تفعيل حسابك بعد موافقة إدارة النظام، وبعدها تستطيع تسجيل الدخول.");
+      } else {
+        // student: the account is active, go straight in
+        enterPortal(data.token, data.user);
+      }
+    } catch (err) {
+      if (err.message === "This email is already registered") {
+        // the account exists: go to the login tab with the e-mail filled in
+        setEmail(f.email.trim());
+        setPassword("");
+        setMode("login");
+        setNotice("هذا البريد لديه حساب مسبقاً. أدخل كلمة المرور لتسجيل الدخول.");
+      } else {
+        setError(serverErrorAr(err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" dir="rtl">
+      <div className="relative max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xl font-bold text-slate-800">
+            {mode === "login" ? "تسجيل الدخول" : "حساب جديد"}
+          </h2>
+          <button
+            onClick={onClose}
+            aria-label="إغلاق"
+            className="rounded-lg px-2 py-1 text-xl text-slate-500 hover:bg-slate-100"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* التبويبات */}
+        <div className="mb-5 grid grid-cols-2 border-b border-slate-200">
+          {[
+            ["login", "تسجيل الدخول"],
+            ["register", "حساب جديد"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => switchMode(id)}
+              className={`pb-3 text-sm font-medium transition ${
+                mode === id
+                  ? "border-b-2 border-emerald-700 text-emerald-800"
+                  : "text-slate-500 hover:text-slate-700"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === "login" && (
+          <form onSubmit={handleLogin} className="space-y-4">
+            <Field label="البريد الإلكتروني">
+              <input
+                type="email"
+                required
+                dir="ltr"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="name@example.com"
+                className={inputCls}
+              />
+            </Field>
+            <Field label="كلمة المرور">
+              <input
+                type="password"
+                required
+                dir="ltr"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={inputCls}
+              />
+            </Field>
+
+            {error && (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-center text-sm text-rose-600">
+                {error}
+              </p>
+            )}
+            {notice && (
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-center text-sm leading-relaxed text-emerald-800">
+                {notice}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-lg bg-emerald-700 py-3 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+            >
+              {loading ? "جاري تسجيل الدخول..." : "دخول"}
+            </button>
+          </form>
+        )}
+
+        {mode === "register" && (
+          <form onSubmit={handleRegister} className="space-y-4">
+            <div className="grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1">
+              {roles.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => {
+                    setRole(r.id);
+                    setError("");
+                  }}
+                  className={`rounded-lg py-2 text-sm transition ${
+                    role === r.id ? "bg-white font-medium text-emerald-800 shadow-sm" : "text-slate-500"
+                  }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+
+            {role !== "student" && (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
+                حسابات الجهات التدريبية والمشرفين تُفعَّل بعد موافقة إدارة النظام، وستتمكن من تسجيل الدخول بعد الموافقة.
+              </p>
+            )}
+
+            {registerFields[role]
+              .filter((f) => !isHidden(f, form))
+              .map((f) => (
+                <Field
+                  key={f.name}
+                  label={`${f.labelFor?.(form) || f.label}${isOptional(f, form) ? " (اختياري)" : ""}`}
+                >
+                  {f.options ? (
+                    <select
+                      name={f.name}
+                      value={form[f.name] || ""}
+                      onChange={(e) =>
+                        // changing the organization type resets its sub-type
+                        setForm({ ...form, [f.name]: e.target.value, ...(f.name === "orgType" && { orgSubtype: "" }) })
+                      }
+                      className={`${inputCls} bg-white`}
+                    >
+                      <option value="">اختر...</option>
+                      {f.options(form).map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type={f.type || "text"}
+                      name={f.name}
+                      dir={f.type ? "ltr" : undefined}
+                      autoComplete={f.type === "password" ? "new-password" : "off"}
+                      value={form[f.name] || ""}
+                      onChange={(e) => setForm({ ...form, [f.name]: e.target.value })}
+                      className={inputCls}
+                    />
+                  )}
+                </Field>
+              ))}
+
+            {error && (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-center text-sm text-rose-600">
+                {error}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-lg bg-emerald-700 py-3 text-sm font-medium text-white hover:bg-emerald-800 disabled:opacity-60"
+            >
+              {loading ? "جاري إنشاء الحساب..." : "إنشاء الحساب"}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function TrainingHomee() {
+  const [open, setOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [role, setRole] = useState("student");
+
+  const openLogin = (r = "student") => {
+    setRole(r);
+    setOpen(false);
+    setLoginOpen(true);
+  };
+
+  return (
+    <div dir="rtl" className="min-h-screen bg-slate-50 text-slate-800">
+      {/* القائمة الجانبية */}
+      <div
+        onClick={() => setOpen(false)}
+        className={`fixed inset-0 z-40 bg-black/50 transition-opacity ${
+          open ? "opacity-100" : "pointer-events-none opacity-0"
+        }`}
+      />
+      <aside
+        className={`fixed right-0 top-0 z-50 flex h-full w-72 flex-col bg-white shadow-xl transition-transform duration-300 ${
+          open ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
+          <span className="font-bold text-emerald-800">منصة التدريب التعاوني</span>
+          <button
+            onClick={() => setOpen(false)}
+            aria-label="إغلاق"
+            className="rounded-lg px-2 py-1 text-xl hover:bg-slate-100"
+          >
+            ✕
+          </button>
+        </div>
+
+        <ul className="flex-1 overflow-y-auto px-3 py-3">
+          {menu.map((m) => (
+            <li key={m.label}>
+              <a
+                href={m.href}
+                onClick={() => setOpen(false)}
+                className="block rounded-lg px-3 py-3 text-sm hover:bg-emerald-50 hover:text-emerald-800"
+              >
+                {m.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+
+        <div className="border-t border-slate-200 p-4">
+          <button
+            onClick={() => openLogin()}
+            className="w-full rounded-lg bg-emerald-700 py-3 text-sm font-medium text-white hover:bg-emerald-800"
+          >
+            تسجيل الدخول
+          </button>
+        </div>
+      </aside>
+
+      {/* القسم الأول: صورة مموهة + تسجيل الدخول */}
+      <section id="home" className="relative overflow-hidden bg-emerald-900 text-white">
+        <img
+          src="/hero.jpg"
+          alt=""
+          className="absolute inset-0 h-full w-full scale-110 object-cover blur-sm"
+        />
+        <div className="absolute inset-0 bg-emerald-900/70" />
+
+        <header className="relative z-10">
+          <nav className="mx-auto flex max-w-6xl items-center justify-between px-5 py-4">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setOpen(true)}
+                aria-label="القائمة"
+                className="rounded-lg border border-white/50 px-3 py-2"
+              >
+                ☰
+              </button>
+              <span className="text-lg font-bold">منصة التدريب التعاوني</span>
+            </div>
+            <button
+              onClick={() => openLogin()}
+              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-emerald-900 hover:bg-emerald-50"
+            >
+              تسجيل الدخول
+            </button>
+          </nav>
+        </header>
+
+        <div className="relative mx-auto max-w-6xl px-5 py-20 text-center md:py-32">
+          <h1 className="text-3xl font-extrabold leading-snug md:text-5xl">
+            منصة التدريب التعاوني
+          </h1>
+          <p className="mx-auto mt-5 max-w-2xl text-base text-emerald-50 md:text-lg">
+            منصتك للوصول إلى فرص التدريب المناسبة لك، والتقديم عليها بسهولة،
+            ومتابعة كل خطوة في رحلتك بشفافية ووضوح.
+          </p>
+          <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
+            <a href="#opportunities" className="w-full rounded-lg bg-white px-6 py-3 font-medium text-emerald-900 hover:bg-emerald-50 sm:w-auto">
+              استكشف الفرص التدريبية
+            </a>
+            <a href="#portals" className="w-full rounded-lg border border-white/70 px-6 py-3 font-medium hover:bg-white/10 sm:w-auto">
+              سجّل كجهة أو مشرف
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* الإحصائيات */}
+      <section id="stats" className="mx-auto max-w-6xl px-5 py-14">
+        <h2 className="text-xl font-bold md:text-2xl">إنجازاتنا بالأرقام</h2>
+        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+          {stats.map((s) => (
+            <div key={s.label} className="rounded-xl bg-white p-6 text-center shadow-sm">
+              <div className="text-3xl font-extrabold text-emerald-800">+{s.value}</div>
+              <div className="mt-1 text-sm text-slate-500">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* العبارة عن رؤية 2030 */}
+      <section className="bg-emerald-50">
+        <p className="mx-auto max-w-4xl px-5 py-10 text-center text-xl font-bold leading-relaxed text-emerald-900 md:text-2xl">
+          التدريب التعاوني يخدم رؤية ٢٠٣٠ في تطوير سوق العمل وخدمة المواطنين
+        </p>
+      </section>
+
+      {/* التسجيل (طلاب / جهات / مشرفين) */}
+      <section id="portals" className="bg-white">
+        <div className="mx-auto max-w-6xl px-5 py-14">
+          <h2 className="text-xl font-bold md:text-2xl">مرحبًا بك في المنصة</h2>
+          <p className="mt-2 text-slate-600">اختر نوع حسابك لتسجيل الدخول أو التسجيل.</p>
+          <div className="mt-6 grid gap-5 md:grid-cols-3">
+            {portals.map((p, i) => (
+              <div key={p.title} className="flex flex-col rounded-xl border border-slate-200 p-6">
+                <h3 className="font-bold">{p.title}</h3>
+                <p className="mt-2 text-sm text-slate-600">{p.text}</p>
+                <button
+                  onClick={() => openLogin(roles[i].id)}
+                  className="mt-5 w-fit rounded-lg bg-emerald-700 px-5 py-2 text-sm font-medium text-white hover:bg-emerald-800"
+                >
+                  {p.cta}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ماذا تقدم لك المنصة */}
+      <section id="features" className="bg-emerald-50">
+        <div className="mx-auto max-w-6xl px-5 py-14">
+          <h2 className="text-xl font-bold md:text-2xl">ماذا ستقدم لك منصة التدريب التعاوني</h2>
+          <div className="mt-6 grid gap-5 md:grid-cols-3">
+            {features.map((f) => (
+              <div key={f.title} className="rounded-xl border border-emerald-100 bg-white p-6">
+                <span className="flex h-10 w-10 items-center justify-center rounded-full border border-emerald-600 text-emerald-700">
+                  ✓
+                </span>
+                <h3 className="mt-5 font-bold">{f.title}</h3>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600">{f.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* المقولة */}
+      <section className="bg-emerald-50">
+        <div className="mx-auto flex max-w-4xl flex-col items-center gap-8 px-5 py-14 md:flex-row">
+          {quote.image && (
+            <img
+              src={quote.image}
+              alt=""
+              className="h-56 w-56 shrink-0 rounded-2xl object-cover"
+            />
+          )}
+          <figure className="text-center md:text-right">
+            <span className="text-6xl font-extrabold leading-none text-emerald-800">”</span>
+            <blockquote className="mt-2 text-lg leading-relaxed text-slate-600">
+              {quote.text}
+            </blockquote>
+            <figcaption className="mt-4 font-bold">{quote.author}</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      {/* الجهات التدريبية والشركاء */}
+      <section id="partners" className="mx-auto max-w-6xl px-5 py-14">
+        <h2 className="text-xl font-bold md:text-2xl">الجهات التدريبية والشركاء</h2>
+        <div className="mt-6 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4 md:grid md:grid-cols-3 md:overflow-visible">
+          {partners.map((p) => (
+            <PartnerCard key={p.name} p={p} />
+          ))}
+        </div>
+        <button className="mt-4 w-full rounded-lg border border-slate-300 bg-white py-3 text-sm font-medium hover:bg-slate-100">
+          عرض الكل
+        </button>
+      </section>
+
+      {/* الفرص التدريبية */}
+      <section id="opportunities" className="mx-auto max-w-6xl px-5 pb-14">
+        <h2 className="text-xl font-bold md:text-2xl">فرص التدريب الطلابي</h2>
+        <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {opportunities.map((o) => (
+            <OpportunityCard key={o.title} o={o} />
+          ))}
+        </div>
+        <button className="mt-6 w-full rounded-lg border border-slate-300 bg-white py-3 text-sm font-medium hover:bg-slate-100">
+          عرض الكل
+        </button>
+      </section>
+
+      {/* معلومات الخدمة */}
+      <section id="service" className="mx-auto max-w-6xl px-5 pb-14">
+        <h2 className="text-xl font-bold md:text-2xl">معلومات الخدمة</h2>
+
+        <div className="mt-6 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+          <dl className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {serviceInfo.map((i) => (
+              <div key={i.label}>
+                <dt className="text-sm text-slate-500">{i.label}</dt>
+                <dd className="mt-1 font-bold">{i.value}</dd>
+              </div>
+            ))}
+          </dl>
+
+          <hr className="my-6 border-slate-200" />
+
+          <dl className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {contact.map((c) => (
+              <div key={c.label}>
+                <dt className="text-sm text-slate-500">{c.label}</dt>
+                <dd className="mt-1 font-bold">
+                  {c.href ? (
+                    <a href={c.href} className="text-emerald-700 hover:underline">
+                      {c.value}
+                    </a>
+                  ) : (
+                    c.value
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+
+          <a
+            href="/guide.pdf"
+            download
+            className="mt-8 inline-block rounded-lg bg-slate-900 px-5 py-3 text-sm font-medium text-white hover:bg-slate-800"
+          >
+            تحميل دليل المستخدم
+          </a>
+        </div>
+      </section>
+
+      <LoginModal
+        open={loginOpen}
+        onClose={() => setLoginOpen(false)}
+        role={role}
+        setRole={setRole}
+      />
+
+      <footer className="bg-emerald-950 py-6 text-center text-sm text-emerald-200">
+        ©️ 2026 منصة التدريب التعاوني. جميع الحقوق محفوظة.
+      </footer>
+    </div>
+  );
+}
