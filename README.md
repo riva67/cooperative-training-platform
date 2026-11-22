@@ -1,6 +1,19 @@
 # Cooperative Training Management Platform
+# منصة إدارة التدريب التعاوني
 
 **Project 45 – Applied Projects Committee, Najran University (Applied College – Computer Department)**
+
+<div dir="rtl">
+
+منصة ويب تربط **الطالب** و**المشرف الأكاديمي** و**جهة التدريب** في مكان واحد، ويديرها **مسؤول النظام**:
+نشر فرص التدريب ← تقديم الطالب ← ترشيح المشرف ← قبول الجهة ← التكليف ← الحضور والتقارير والزيارات الميدانية
+ونماذج الجامعة ← الدرجة النهائية ← مؤشرات الأثر (عدد الفرص، نسبة الإكمال، رضا جهات التدريب، نسبة التوظيف بعد التدريب).
+
+**التقنيات:** React + Tailwind CSS للواجهات، Node.js + Express.js للخادم، PostgreSQL لقاعدة البيانات (عبر Prisma).
+
+</div>
+
+---
 
 A web platform that connects the **student**, the **academic supervisor** and the **training provider**, managed by an
 **administrator**: training opportunities → applications → nomination → acceptance → placement → attendance, reports,
