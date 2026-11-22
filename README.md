@@ -61,6 +61,13 @@ cd portals/supervisor  && npm install && npm run dev
 cd portals/admin       && npm install && npm run dev
 ```
 
+On Windows (PowerShell / cmd) use `copy .env.example .env` instead of `cp`, and make sure Docker Desktop is running
+before `docker compose up -d`. If PostgreSQL is also installed on Windows it may already use port 5432; stop that
+service or change `DATABASE_URL` in `backend/.env`.
+
+If a login returns **"Internal server error"**, the API cannot reach the database or the tables are missing:
+start the database (`docker compose up -d`), then run `npx prisma migrate dev` and `npm run db:seed` in `backend/`.
+
 In `backend/.env`, `CORS_ORIGIN` must list the five portal addresses:
 `http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,http://localhost:5177`
 
